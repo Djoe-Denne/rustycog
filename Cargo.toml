@@ -1,0 +1,70 @@
+[workspace]
+resolver = "2"
+members = [
+    "rustycog-command",
+    "rustycog-config",
+    "rustycog-core",
+    "rustycog-db",
+    "rustycog-events",
+    "rustycog-http",
+    "rustycog-logger",
+    "rustycog-outbox",
+    "rustycog-permission",
+    "rustycog-server",
+    "rustycog-testing",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+aws-config = "1"
+aws-credential-types = "1"
+aws-sdk-sqs = "1"
+axum = "0.8"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-test = "17"
+axum-valid = { version = "0.23", features = ["validator", "422", "into_json"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+claims = "0.8"
+config = "0.15"
+ctrlc = "3.4"
+dotenvy = "0.15"
+futures = "0.3"
+inventory = "0.3"
+jsonwebtoken = "9"
+libc = "0.2"
+mockall = "0.13"
+moka = { version = "0.12", features = ["future"] }
+rand = "0.9"
+rdkafka = "0.37"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rstest = "0.25"
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
+sea-orm = { version = "1", features = ["runtime-tokio-rustls", "sqlx-postgres", "macros"] }
+sea-orm-migration = { version = "1", features = ["runtime-tokio-rustls", "sqlx-postgres"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+testcontainers = "0.24"
+testcontainers-modules = "0.12"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-test = "0.4"
+toml = "0.8"
+tower = "0.5"
+tower-http = "0.6"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-loki = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = "2.5"
+uuid = { version = "1", features = ["serde", "v4"] }
+validator = { version = "0.20", features = ["derive"] }
+wiremock = "0.6"

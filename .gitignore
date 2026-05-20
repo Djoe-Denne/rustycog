@@ -1,0 +1,25 @@
+/target/
+/target-llvm-cov/
+
+# Local environment and secrets.
+.env
+.env.*
+!.env.example
+
+# Coverage and profiling output.
+lcov.info
+*.profraw
+*.profdata
+coverage/
+coverage-artifacts/
+
+# Rust analyzer and editor scratch files.
+/.rustc_info.json
+/.vscode/
+/.idea/
+*.swp
+*.swo
+
+# OS noise.
+.DS_Store
+Thumbs.db

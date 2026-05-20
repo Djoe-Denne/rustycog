@@ -1,0 +1,15 @@
+[package]
+name = "rustycog-core"
+version.workspace = true
+edition.workspace = true
+description = "Core abstractions and traits for RustyCog microservices"
+license.workspace = true
+readme.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true

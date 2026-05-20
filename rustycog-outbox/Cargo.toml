@@ -1,0 +1,25 @@
+[package]
+name = "rustycog-outbox"
+version.workspace = true
+edition.workspace = true
+description = "Transactional outbox bridge for RustyCog services"
+license.workspace = true
+readme.workspace = true
+
+[dependencies]
+rustycog-core = { version = "0.1.0", path = "../rustycog-core" }
+rustycog-db = { version = "0.1.0", path = "../rustycog-db" }
+rustycog-events = { version = "0.1.0", path = "../rustycog-events" }
+
+sea-orm.workspace = true
+sea-orm-migration.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio-test.workspace = true

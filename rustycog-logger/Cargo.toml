@@ -1,0 +1,27 @@
+[package]
+name = "rustycog-logger"
+version.workspace = true
+edition.workspace = true
+description = "Logging setup utilities for RustyCog microservices"
+license.workspace = true
+readme.workspace = true
+
+[features]
+default = []
+scaleway-loki = ["tracing-loki"]
+
+[dependencies]
+rustycog-core = { version = "0.1.0", path = "../rustycog-core" }
+rustycog-config = { version = "0.1.0", path = "../rustycog-config" }
+async-trait.workspace = true
+serde.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+tracing-loki = { workspace = true, optional = true }
+tokio.workspace = true

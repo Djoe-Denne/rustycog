@@ -12,6 +12,23 @@ documentation = "https://github.com/Djoe-Denne/rustycog#readme"
 keywords = ["rustycog", "microservices", "sdk", "ddd", "hexagonal"]
 categories = ["development-tools", "asynchronous"]
 rust-version = "1.84"
+include = [
+    "Cargo.toml",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "README.md",
+    "src/**",
+    "rustycog-command/src/**",
+    "rustycog-config/src/**",
+    "rustycog-core/src/**",
+    "rustycog-db/src/**",
+    "rustycog-events/src/**",
+    "rustycog-http/src/**",
+    "rustycog-logger/src/**",
+    "rustycog-outbox/src/**",
+    "rustycog-permission/src/**",
+    "rustycog-server/src/**",
+]
 
 [package.metadata.docs.rs]
 all-features = true

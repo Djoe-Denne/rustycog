@@ -54,7 +54,13 @@ jobs:
           test_status=$?
           set -e
 
-          cargo llvm-cov report --lcov --output-path lcov.info
+          if [ "$test_status" -eq 0 ]; then
+            cargo llvm-cov report --lcov --output-path lcov.info
+          else
+            echo "Skipping coverage report generation because test run failed."
+            : > lcov.info
+          fi
+
           exit "$test_status"
 
       - name: Check rustycog-testing crate

@@ -11,7 +11,7 @@ env:
 
 jobs:
   publish:
-    name: Package and publish rustycog
+    name: Package and publish rustycog-framework
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +24,7 @@ jobs:
         run: cargo check --workspace --all-targets --locked
 
       - name: Package crate
-        run: cargo package -p rustycog --locked
+        run: cargo package -p rustycog-framework --locked
 
       - name: Publish crate
         shell: bash
@@ -38,11 +38,11 @@ jobs:
           attempt=1
 
           while [ "$attempt" -le "$max_attempts" ]; do
-            echo "Publishing rustycog (attempt ${attempt}/${max_attempts})"
+            echo "Publishing rustycog-framework (attempt ${attempt}/${max_attempts})"
             log_file="$(mktemp)"
 
             set +e
-            cargo publish -p rustycog --locked 2>&1 | tee "${log_file}"
+            cargo publish -p rustycog-framework --locked 2>&1 | tee "${log_file}"
             status=${PIPESTATUS[0]}
             set -e
 
@@ -52,7 +52,7 @@ jobs:
             fi
 
             if rg -q "already uploaded|already exists" "${log_file}"; then
-              echo "rustycog is already published at this version. Continuing."
+              echo "rustycog-framework is already published at this version. Continuing."
               rm -f "${log_file}"
               exit 0
             fi
@@ -68,5 +68,5 @@ jobs:
             sleep_seconds=$((sleep_seconds + 10))
           done
 
-          echo "Failed to publish rustycog after ${max_attempts} attempts."
+          echo "Failed to publish rustycog-framework after ${max_attempts} attempts."
           exit 1

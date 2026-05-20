@@ -870,6 +870,7 @@ mod tests {
     fn test_client() -> Client {
         let credentials = Credentials::new("test", "test", None, None, "rustycog-events-test");
         let config = aws_sdk_sqs::Config::builder()
+            .behavior_version(BehaviorVersion::latest())
             .region(Region::new("us-east-1"))
             .endpoint_url("http://localhost:4566")
             .credentials_provider(credentials)

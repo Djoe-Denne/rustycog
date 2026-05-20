@@ -1,21 +1,21 @@
 use axum::{middleware, Router};
-use rustycog_command::GenericCommandService;
-use rustycog_config::ServerConfig;
+use crate::rustycog_command::GenericCommandService;
+use crate::rustycog_config::ServerConfig;
+use crate::rustycog_permission::{Permission, PermissionChecker};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::propagate_header::PropagateHeaderLayer;
 
-use crate::middleware_permission::{
+use super::middleware_permission::{
     optional_permission_middleware, permission_middleware, PermissionGuard,
 };
-use crate::{
+use super::{
     handle_panic, health_check,
     jwt_handler::UserIdExtractor,
     middleware_auth::{auth_middleware, optional_auth_middleware},
     tracing_middleware::{tracing_middleware, X_CORRELATION_ID},
 };
-use rustycog_permission::{Permission, PermissionChecker};
 
 /// Application state for HTTP handlers
 #[derive(Clone)]

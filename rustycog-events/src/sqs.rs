@@ -1,11 +1,11 @@
-use crate::event::{DomainEvent, EventPublisher};
-use crate::{EventConsumer, EventHandler};
+use super::event::{DomainEvent, EventPublisher};
+use super::{EventConsumer, EventHandler};
 use async_trait::async_trait;
 use aws_config::{BehaviorVersion, Region};
 use aws_credential_types::Credentials;
 use aws_sdk_sqs::{types::Message, Client, Config};
-use rustycog_config::SqsConfig;
-use rustycog_core::error::ServiceError;
+use crate::rustycog_config::SqsConfig;
+use crate::rustycog_core::error::ServiceError;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;

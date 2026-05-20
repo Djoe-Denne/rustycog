@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use rustycog_core::error::ServiceError;
+use crate::rustycog_core::error::ServiceError;
 
 /// Core trait for domain events
 pub trait DomainEvent: Send + Sync + std::fmt::Debug {

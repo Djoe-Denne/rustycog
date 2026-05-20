@@ -1,11 +1,11 @@
-use rustycog_config::HasLoggingConfig;
+use crate::rustycog_config::HasLoggingConfig;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[cfg(feature = "scaleway-loki")]
 use anyhow::Context;
 #[cfg(feature = "scaleway-loki")]
-use rustycog_config::{HasScalewayConfig, ScalewayLokiLoggingOutput};
+use crate::rustycog_config::{HasScalewayConfig, ScalewayLokiLoggingOutput};
 #[cfg(feature = "scaleway-loki")]
 use std::env;
 

@@ -8,7 +8,7 @@ use std::time::Instant;
 use tracing::{info_span, Instrument};
 use uuid::Uuid;
 
-use crate::middleware_auth::AuthUser;
+use super::middleware_auth::AuthUser;
 
 /// Header name for request ID
 pub const X_REQUEST_ID: &str = "x-request-id";

@@ -4,9 +4,9 @@
 //! based on the business logic, without requiring a real message queue.
 
 use async_trait::async_trait;
-use rustycog_core::error::ServiceError;
-use rustycog_events::event::EventPublisher;
-use rustycog_events::DomainEvent;
+use rustycog::core::error::ServiceError;
+use rustycog::events::event::EventPublisher;
+use rustycog::events::DomainEvent;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration, Instant};

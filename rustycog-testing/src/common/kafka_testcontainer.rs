@@ -4,7 +4,7 @@
 //! event publishing functionality.
 
 use rdkafka::consumer::Consumer;
-use rustycog_config::{load_config_part, KafkaConfig};
+use rustycog::config::{load_config_part, KafkaConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;

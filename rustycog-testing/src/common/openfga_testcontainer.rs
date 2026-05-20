@@ -26,11 +26,11 @@
 //! singleton is process-global; concurrent tests would fight for tuple
 //! state.
 //!
-//! [`DatabaseConfig`]: rustycog_config::DatabaseConfig
-//! [`SqsConfig`]: rustycog_config::SqsConfig
+//! [`DatabaseConfig`]: rustycog::config::DatabaseConfig
+//! [`SqsConfig`]: rustycog::config::SqsConfig
 
-use rustycog_config::{load_config_part, OpenFgaClientConfig};
-use rustycog_permission::{Permission, ResourceRef, Subject};
+use rustycog::config::{load_config_part, OpenFgaClientConfig};
+use rustycog::permission::{Permission, ResourceRef, Subject};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};

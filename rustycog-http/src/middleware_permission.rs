@@ -7,7 +7,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use rustycog_permission::{Permission, PermissionChecker, ResourceRef, Subject};
+use crate::rustycog_permission::{Permission, PermissionChecker, ResourceRef, Subject};
 use tracing::{debug, info};
 use uuid::Uuid;
 

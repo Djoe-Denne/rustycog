@@ -10,8 +10,8 @@
 //! LRU cache.
 
 use async_trait::async_trait;
-pub use rustycog_config::OpenFgaClientConfig;
-use rustycog_core::error::DomainError;
+pub use crate::rustycog_config::OpenFgaClientConfig;
+use crate::rustycog_core::error::DomainError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

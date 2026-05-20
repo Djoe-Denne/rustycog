@@ -1,7 +1,7 @@
 //! # `RustyCog` Database
 //!
 //! Database management utilities including connection pooling and migrations.
-use rustycog_config::DatabaseConfig;
+use crate::rustycog_config::DatabaseConfig;
 use sea_orm::{
     ConnectOptions, Database, DatabaseConnection, DatabaseTransaction, DbErr, TransactionTrait,
 };

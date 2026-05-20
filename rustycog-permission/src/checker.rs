@@ -12,12 +12,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use moka::future::Cache;
-use rustycog_config::OpenFgaClientConfig;
-use rustycog_core::error::DomainError;
+use crate::rustycog_config::OpenFgaClientConfig;
+use crate::rustycog_core::error::DomainError;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::{Permission, PermissionChecker, ResourceRef, Subject};
+use super::{Permission, PermissionChecker, ResourceRef, Subject};
 
 // =============================================================================
 // OpenFGA

@@ -1,6 +1,6 @@
 use crate::common::{build_test_app, spawn_test_server, ServiceTestDescriptor};
 use reqwest::Client;
-use rustycog_config::{load_config_part, ServerConfig};
+use rustycog::config::{load_config_part, ServerConfig};
 use std::any::TypeId;
 use std::io;
 use std::sync::Arc;

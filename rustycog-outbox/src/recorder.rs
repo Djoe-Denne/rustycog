@@ -1,11 +1,11 @@
 use chrono::Utc;
-use rustycog_core::error::ServiceError;
-use rustycog_events::DomainEvent;
+use crate::rustycog_core::error::ServiceError;
+use crate::rustycog_events::DomainEvent;
 use sea_orm::{ActiveModelTrait, ConnectionTrait, Set};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::entity::{self, STATUS_PENDING};
+use super::entity::{self, STATUS_PENDING};
 
 #[derive(Clone, Debug, Default)]
 pub struct OutboxRecorder;

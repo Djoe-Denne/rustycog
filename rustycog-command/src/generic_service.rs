@@ -46,7 +46,7 @@ impl Clone for GenericCommandService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
+    use crate::command::{
         registry::{CommandErrorMapper, CommandRegistryBuilder},
         CommandHandler,
     };

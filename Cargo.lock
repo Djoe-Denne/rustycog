@@ -1802,9 +1802,9 @@ checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
 
 [[package]]
 name = "futures-timer"
-version = "3.0.3"
+version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f288b0a4f20f9a56b5d1da57e2227c661b7b16168e2f72365f57b63326e29b24"
+checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
 
 [[package]]
 name = "futures-util"
@@ -3955,178 +3955,49 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
-name = "rustycog-command"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "inventory",
- "rustycog-config",
- "rustycog-core",
- "serde",
- "thiserror",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "rustycog-config"
-version = "0.1.0"
-dependencies = [
- "claims",
- "config",
- "dotenvy",
- "mockall",
- "rstest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-test",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
-name = "rustycog-core"
+name = "rustycog"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
- "chrono",
- "serde",
- "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "rustycog-db"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "rustycog-config",
- "rustycog-core",
- "sea-orm",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "rustycog-events"
-version = "0.1.0"
-dependencies = [
  "async-trait",
  "aws-config",
  "aws-credential-types",
  "aws-sdk-sqs",
- "chrono",
- "futures",
- "rdkafka",
- "rustls 0.23.40",
- "rustycog-config",
- "rustycog-core",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "rustycog-http"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
  "axum",
  "axum-server",
  "axum-valid",
  "base64",
  "chrono",
+ "claims",
+ "config",
+ "dotenvy",
+ "futures",
+ "inventory",
  "jsonwebtoken",
+ "mockall",
+ "moka",
+ "rdkafka",
  "reqwest",
- "rustycog-command",
- "rustycog-config",
- "rustycog-core",
- "rustycog-permission",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "uuid",
- "validator",
-]
-
-[[package]]
-name = "rustycog-logger"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "rustycog-config",
- "rustycog-core",
- "serde",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-loki",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "rustycog-outbox"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "rustycog-core",
- "rustycog-db",
- "rustycog-events",
+ "rstest",
+ "rustls 0.23.40",
  "sea-orm",
  "sea-orm-migration",
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror",
  "tokio",
  "tokio-test",
+ "toml 0.8.23",
+ "tower",
+ "tower-http",
  "tracing",
+ "tracing-appender",
+ "tracing-loki",
+ "tracing-subscriber",
+ "url",
  "uuid",
-]
-
-[[package]]
-name = "rustycog-permission"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "moka",
- "reqwest",
- "rustycog-config",
- "rustycog-core",
- "serde",
- "serde_json",
- "tokio",
- "tokio-test",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "rustycog-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "rustycog-core",
- "tokio",
- "tracing",
+ "validator",
 ]
 
 [[package]]
@@ -4147,13 +4018,7 @@ dependencies = [
  "rand 0.9.4",
  "rdkafka",
  "reqwest",
- "rustycog-config",
- "rustycog-core",
- "rustycog-db",
- "rustycog-events",
- "rustycog-http",
- "rustycog-logger",
- "rustycog-permission",
+ "rustycog",
  "sea-orm",
  "serde",
  "serde_json",

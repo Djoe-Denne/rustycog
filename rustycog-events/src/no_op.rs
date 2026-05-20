@@ -1,7 +1,7 @@
-use crate::event::{DomainEvent, EventPublisher};
-use crate::{EventConsumer, EventHandler};
+use super::event::{DomainEvent, EventPublisher};
+use super::{EventConsumer, EventHandler};
 use async_trait::async_trait;
-use rustycog_core::error::ServiceError;
+use crate::rustycog_core::error::ServiceError;
 use tracing;
 
 /// No-op event publisher for testing and development

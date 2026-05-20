@@ -21,8 +21,8 @@ pub mod no_op;
 pub mod sqs;
 
 use async_trait::async_trait;
-use rustycog_config::{KafkaConfig, QueueConfig, SqsConfig};
-use rustycog_core::error::ServiceError;
+use crate::rustycog_config::{KafkaConfig, QueueConfig, SqsConfig};
+use crate::rustycog_core::error::ServiceError;
 use std::collections::HashSet;
 use std::sync::Arc;
 

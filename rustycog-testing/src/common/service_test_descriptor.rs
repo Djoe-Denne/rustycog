@@ -2,11 +2,11 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait ServiceTestDescriptor<T>: Send + Sync + 'static {
-    type Config: rustycog_config::ConfigLoader<Self::Config>
-        + rustycog_config::HasServerConfig
-        + rustycog_config::HasLoggingConfig
-        + rustycog_config::HasDbConfig
-        + rustycog_logger::ServiceLoggerConfig
+    type Config: rustycog::config::ConfigLoader<Self::Config>
+        + rustycog::config::HasServerConfig
+        + rustycog::config::HasLoggingConfig
+        + rustycog::config::HasDbConfig
+        + rustycog::logger::ServiceLoggerConfig
         + Send
         + Sync
         + 'static;
@@ -14,13 +14,13 @@ pub trait ServiceTestDescriptor<T>: Send + Sync + 'static {
     async fn build_app(
         &self,
         config: Self::Config,
-        server_config: rustycog_config::ServerConfig,
+        server_config: rustycog::config::ServerConfig,
     ) -> anyhow::Result<()>;
 
     async fn run_app(
         &self,
         config: Self::Config,
-        server_config: rustycog_config::ServerConfig,
+        server_config: rustycog::config::ServerConfig,
     ) -> anyhow::Result<()>;
 
     async fn run_migrations_up(
@@ -38,7 +38,7 @@ pub trait ServiceTestDescriptor<T>: Send + Sync + 'static {
     fn has_sqs(&self) -> bool;
 
     /// Whether this service exercises the centralized
-    /// [`rustycog_permission::OpenFgaPermissionChecker`] in tests.
+    /// [`rustycog::permission::OpenFgaPermissionChecker`] in tests.
     ///
     /// When `true`, [`crate::common::TestFixture::new`] starts the singleton
     /// `openfga/openfga` testcontainer, creates a fresh store, uploads the

@@ -66,8 +66,8 @@ impl RetryPolicy {
 }
 
 // Conversion from rustycog_config::CommandRetryConfig to RetryPolicy
-impl From<&rustycog_config::CommandRetryConfig> for RetryPolicy {
-    fn from(config: &rustycog_config::CommandRetryConfig) -> Self {
+impl From<&crate::rustycog_config::CommandRetryConfig> for RetryPolicy {
+    fn from(config: &crate::rustycog_config::CommandRetryConfig) -> Self {
         Self {
             max_attempts: config.max_attempts,
             base_delay: Duration::from_millis(config.base_delay_ms),
@@ -101,7 +101,7 @@ impl Default for RegistryConfig {
 impl RegistryConfig {
     /// Create a new `RegistryConfig` from a `CommandRetryConfig`
     #[must_use]
-    pub fn from_retry_config(retry_config: &rustycog_config::CommandRetryConfig) -> Self {
+    pub fn from_retry_config(retry_config: &crate::rustycog_config::CommandRetryConfig) -> Self {
         Self {
             default_timeout: Duration::from_secs(30),
             retry_policy: RetryPolicy::from(retry_config),

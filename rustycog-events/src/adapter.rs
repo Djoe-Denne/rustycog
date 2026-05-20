@@ -4,13 +4,13 @@
 //! their own domain events and error types with rustycog-events, while maintaining
 //! type safety and allowing custom mappings.
 
-use crate::ConcreteEventPublisher;
+use super::ConcreteEventPublisher;
 use async_trait::async_trait;
-use rustycog_core::error::ServiceError;
+use crate::rustycog_core::error::ServiceError;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::event::{DomainEvent, EventPublisher};
+use super::event::{DomainEvent, EventPublisher};
 
 /// Trait for bidirectional mapping between custom error types and `ServiceError`
 pub trait ErrorMapper<E>: Send + Sync {

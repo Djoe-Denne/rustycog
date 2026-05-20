@@ -6,8 +6,8 @@
 use crate::common::openfga_testcontainer::TestOpenFga;
 use crate::common::sqs_testcontainer::TestSqs;
 use crate::common::ServiceTestDescriptor;
-use rustycog_config::DatabaseConfig;
-use rustycog_db::DbConnectionPool;
+use rustycog::config::DatabaseConfig;
+use rustycog::db::DbConnectionPool;
 use sea_orm::{Database, DatabaseConnection, DbErr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -304,7 +304,7 @@ async fn register_cleanup_handler() {
 fn create_base_test_config() -> DatabaseConfig {
     // Load configuration from test.toml
     // The RUN_ENV=test environment variable should be set by the justfile
-    rustycog_config::load_config_part::<DatabaseConfig>("database").expect(
+    rustycog::config::load_config_part::<DatabaseConfig>("database").expect(
         "Failed to load test configuration. Make sure RUN_ENV=test is set and config/test.toml exists."
     )
 }

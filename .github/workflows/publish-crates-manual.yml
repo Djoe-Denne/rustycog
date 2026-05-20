@@ -11,7 +11,7 @@ env:
 
 jobs:
   publish:
-    name: Package and publish workspace crates
+    name: Package and publish rustycog
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,92 +23,50 @@ jobs:
       - name: Validate workspace build
         run: cargo check --workspace --all-targets --locked
 
-      - name: Package bootstrap crates before publish
-        shell: bash
-        run: |
-          set -euo pipefail
-          crates=(
-            rustycog-core
-            rustycog-config
-          )
+      - name: Package crate
+        run: cargo package -p rustycog --locked
 
-          for crate in "${crates[@]}"; do
-            echo "::group::cargo package -p ${crate}"
-            cargo package -p "${crate}" --locked
-            echo "::endgroup::"
-          done
-
-      - name: Publish crates in dependency order
+      - name: Publish crate
         shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
           set -euo pipefail
 
-          publish_with_retry() {
-            local crate="$1"
-            local max_attempts=8
-            local sleep_seconds=20
-            local attempt=1
+          max_attempts=8
+          sleep_seconds=20
+          attempt=1
 
-            while [ "$attempt" -le "$max_attempts" ]; do
-              echo "Publishing ${crate} (attempt ${attempt}/${max_attempts})"
-              local log_file
-              log_file="$(mktemp)"
+          while [ "$attempt" -le "$max_attempts" ]; do
+            echo "Publishing rustycog (attempt ${attempt}/${max_attempts})"
+            log_file="$(mktemp)"
 
-              set +e
-              cargo publish -p "${crate}" --locked 2>&1 | tee "${log_file}"
-              local status=${PIPESTATUS[0]}
-              set -e
+            set +e
+            cargo publish -p rustycog --locked 2>&1 | tee "${log_file}"
+            status=${PIPESTATUS[0]}
+            set -e
 
-              if [ "$status" -eq 0 ]; then
-                rm -f "${log_file}"
-                return 0
-              fi
-
-              if rg -q "already uploaded|already exists" "${log_file}"; then
-                echo "${crate} is already published at this version. Continuing."
-                rm -f "${log_file}"
-                return 0
-              fi
-
+            if [ "$status" -eq 0 ]; then
               rm -f "${log_file}"
+              exit 0
+            fi
 
-              if [ "$attempt" -lt "$max_attempts" ]; then
-                echo "Publish failed for ${crate}. Retrying in ${sleep_seconds}s..."
-                sleep "${sleep_seconds}"
-              fi
+            if rg -q "already uploaded|already exists" "${log_file}"; then
+              echo "rustycog is already published at this version. Continuing."
+              rm -f "${log_file}"
+              exit 0
+            fi
 
-              attempt=$((attempt + 1))
-              sleep_seconds=$((sleep_seconds + 10))
-            done
+            rm -f "${log_file}"
 
-            echo "Failed to publish ${crate} after ${max_attempts} attempts."
-            return 1
-          }
+            if [ "$attempt" -lt "$max_attempts" ]; then
+              echo "Publish failed. Retrying in ${sleep_seconds}s..."
+              sleep "${sleep_seconds}"
+            fi
 
-          publish_layer() {
-            local layer_name="$1"
-            shift
-            local crates=("$@")
+            attempt=$((attempt + 1))
+            sleep_seconds=$((sleep_seconds + 10))
+          done
 
-            echo "Publishing ${layer_name}: ${crates[*]}"
-            for crate in "${crates[@]}"; do
-              publish_with_retry "${crate}"
-            done
-            echo "Waiting for crates.io index propagation..."
-            sleep 20
-          }
-
-          publish_layer "layer0" \
-            rustycog-core rustycog-config
-
-          publish_layer "layer1" \
-            rustycog-command rustycog-db rustycog-events \
-            rustycog-logger rustycog-permission rustycog-server
-
-          publish_layer "layer2" \
-            rustycog-http rustycog-outbox
-
-          publish_layer "layer3" \
-            rustycog-testing
+          echo "Failed to publish rustycog after ${max_attempts} attempts."
+          exit 1

@@ -6,8 +6,8 @@
 use aws_config::{BehaviorVersion, Region};
 use aws_credential_types::Credentials;
 use aws_sdk_sqs::{types::Message, Client, Config};
-use rustycog_config::{load_config_part, QueueConfig, SqsConfig};
-use rustycog_events::event::DomainEvent;
+use rustycog::config::{load_config_part, QueueConfig, SqsConfig};
+use rustycog::events::event::DomainEvent;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};

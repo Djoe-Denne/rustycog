@@ -7,9 +7,9 @@ use std::{
 };
 
 use chrono::Utc;
-use rustycog_core::error::ServiceError;
-use rustycog_db::DbConnectionPool;
-use rustycog_events::{DomainEvent, EventPublisher};
+use crate::rustycog_core::error::ServiceError;
+use crate::rustycog_db::DbConnectionPool;
+use crate::rustycog_events::{DomainEvent, EventPublisher};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
     Set,
@@ -17,7 +17,7 @@ use sea_orm::{
 use tokio::time::{sleep, Duration};
 use tracing::{debug, error, info, warn};
 
-use crate::{
+use super::{
     entity::{
         self, OutboxEvents, STATUS_FAILED, STATUS_PENDING, STATUS_PUBLISHED, STATUS_PUBLISHING,
     },

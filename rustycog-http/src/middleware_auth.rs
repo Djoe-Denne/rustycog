@@ -8,7 +8,7 @@ use axum::{
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::jwt_handler::UserIdExtractor;
+use super::jwt_handler::UserIdExtractor;
 use std::sync::Arc;
 
 /// Authenticated user information extracted from middleware

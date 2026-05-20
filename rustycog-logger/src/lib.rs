@@ -3,9 +3,9 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[cfg(feature = "scaleway-loki")]
-use anyhow::Context;
-#[cfg(feature = "scaleway-loki")]
 use crate::rustycog_config::{HasScalewayConfig, ScalewayLokiLoggingOutput};
+#[cfg(feature = "scaleway-loki")]
+use anyhow::Context;
 #[cfg(feature = "scaleway-loki")]
 use std::env;
 

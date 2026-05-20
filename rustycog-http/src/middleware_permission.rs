@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::rustycog_permission::{Permission, PermissionChecker, ResourceRef, Subject};
 use axum::{
     body::Body,
     extract::State,
@@ -7,7 +8,6 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use crate::rustycog_permission::{Permission, PermissionChecker, ResourceRef, Subject};
 use tracing::{debug, info};
 use uuid::Uuid;
 

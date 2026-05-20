@@ -5,8 +5,8 @@
 //! type safety and allowing custom mappings.
 
 use super::ConcreteEventPublisher;
-use async_trait::async_trait;
 use crate::rustycog_core::error::ServiceError;
+use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
 

@@ -1,7 +1,7 @@
-use axum::{middleware, Router};
 use crate::rustycog_command::GenericCommandService;
 use crate::rustycog_config::ServerConfig;
 use crate::rustycog_permission::{Permission, PermissionChecker};
+use axum::{middleware, Router};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::catch_panic::CatchPanicLayer;

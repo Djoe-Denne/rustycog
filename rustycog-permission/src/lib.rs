@@ -9,9 +9,9 @@
 //! `CachedPermissionChecker` decorates any underlying checker with a short-TTL
 //! LRU cache.
 
-use async_trait::async_trait;
 pub use crate::rustycog_config::OpenFgaClientConfig;
 use crate::rustycog_core::error::DomainError;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

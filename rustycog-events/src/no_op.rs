@@ -1,7 +1,7 @@
 use super::event::{DomainEvent, EventPublisher};
 use super::{EventConsumer, EventHandler};
-use async_trait::async_trait;
 use crate::rustycog_core::error::ServiceError;
+use async_trait::async_trait;
 use tracing;
 
 /// No-op event publisher for testing and development

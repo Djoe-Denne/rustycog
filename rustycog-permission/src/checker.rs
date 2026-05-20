@@ -10,10 +10,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use moka::future::Cache;
 use crate::rustycog_config::OpenFgaClientConfig;
 use crate::rustycog_core::error::DomainError;
+use async_trait::async_trait;
+use moka::future::Cache;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 

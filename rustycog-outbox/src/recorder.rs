@@ -1,6 +1,6 @@
-use chrono::Utc;
 use crate::rustycog_core::error::ServiceError;
 use crate::rustycog_events::DomainEvent;
+use chrono::Utc;
 use sea_orm::{ActiveModelTrait, ConnectionTrait, Set};
 use serde_json::Value;
 use uuid::Uuid;

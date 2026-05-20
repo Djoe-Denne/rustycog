@@ -6,10 +6,10 @@ use std::{
     },
 };
 
-use chrono::Utc;
 use crate::rustycog_core::error::ServiceError;
 use crate::rustycog_db::DbConnectionPool;
 use crate::rustycog_events::{DomainEvent, EventPublisher};
+use chrono::Utc;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
     Set,

@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use jsonwebtoken::{decode, errors::ErrorKind, Algorithm, DecodingKey, Validation};
 use crate::rustycog_command::{Command, CommandError, CommandHandler, ValidateTokenCommand};
 use crate::rustycog_config::AuthConfig;
+use async_trait::async_trait;
+use jsonwebtoken::{decode, errors::ErrorKind, Algorithm, DecodingKey, Validation};
 use std::{collections::HashSet, sync::Arc};
 use tracing::debug;
 use uuid::Uuid;

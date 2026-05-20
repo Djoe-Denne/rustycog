@@ -1,13 +1,13 @@
 use super::event::{DomainEvent, EventPublisher};
 use super::{EventConsumer, EventHandler};
+use crate::rustycog_config::KafkaConfig;
+use crate::rustycog_core::error::ServiceError;
 use async_trait::async_trait;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::{BorrowedMessage, Headers, Message};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::Timeout;
-use crate::rustycog_config::KafkaConfig;
-use crate::rustycog_core::error::ServiceError;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;

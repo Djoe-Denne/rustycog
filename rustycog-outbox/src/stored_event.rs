@@ -1,6 +1,6 @@
-use chrono::{DateTime, Utc};
 use crate::rustycog_core::error::ServiceError;
 use crate::rustycog_events::DomainEvent;
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::collections::HashMap;
 use uuid::Uuid;

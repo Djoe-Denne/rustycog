@@ -17,8 +17,15 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+authors = ["Djoe Denne <djoe.denne@gmail.com>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
+repository = "https://github.com/Djoe-Denne/rustycog"
+homepage = "https://github.com/Djoe-Denne/rustycog"
+documentation = "https://github.com/Djoe-Denne/rustycog#readme"
+keywords = ["rustycog", "microservices", "sdk", "ddd", "hexagonal"]
+categories = ["development-tools", "asynchronous"]
+rust-version = "1.84"
 
 [workspace.dependencies]
 anyhow = "1"

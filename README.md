@@ -36,8 +36,8 @@ RustyCog provides a set of crates that handle the common concerns of microservic
 - **Fixture Management**: Reusable test data
 
 ### 🔧 **Developer Experience**
-- **Error Mapping Macros**: Automatic domain error to HTTP error conversion
-- **Command Macros**: Boilerplate reduction for command implementation
+- **Error Mapping Helpers**: Consistent domain error to HTTP error conversion
+- **Command Runtime**: Reusable command registry and execution pipeline
 - **Type Safety**: Compile-time guarantees for common patterns
 
 ## Quick Start
@@ -47,7 +47,6 @@ RustyCog provides a set of crates that handle the common concerns of microservic
 ```toml
 [dependencies]
 rustycog-core = "0.1"
-rustycog-macros = "0.1"
 rustycog-server = "0.1"
 rustycog-http = "0.1"
 ```
@@ -55,21 +54,17 @@ rustycog-http = "0.1"
 ### 2. Define your domain errors
 
 ```rust
-use rustycog_macros::ErrorMapper;
+use thiserror::Error;
 
-#[derive(Debug, Clone, thiserror::Error, ErrorMapper)]
-#[error_mapper(domain = "user")]
+#[derive(Debug, Clone, Error)]
 pub enum UserError {
     #[error("User not found")]
-    #[error_mapper(status = 404, category = "not_found")]
     UserNotFound,
-    
+
     #[error("User already exists")]
-    #[error_mapper(status = 409, category = "conflict")]
     UserAlreadyExists,
-    
+
     #[error("Invalid email format")]
-    #[error_mapper(status = 400, category = "validation")]
     InvalidEmail,
 }
 ```
@@ -161,11 +156,6 @@ RustyCog follows clean architecture principles:
 
 ### `rustycog-core`
 Core abstractions and traits that all other crates depend on.
-
-### `rustycog-macros`
-Procedural macros for reducing boilerplate:
-- `#[derive(ErrorMapper)]` - Automatic error mapping
-- `#[derive(Command)]` - Command trait implementation
 
 ### `rustycog-server`
 Server setup and application bootstrapping utilities.
@@ -307,24 +297,22 @@ async fn test_create_user() {
 
 ## Examples
 
-See the `examples/` directory for complete working examples:
-
-- **simple-service**: Basic CRUD service
-- **event-driven-service**: Service with event publishing
-- **microservice-template**: Full-featured microservice template
+Reference implementations currently live in this monorepo's service crates
+(`IAMRusty`, `Hive`, `Manifesto`, `Telegraph`) and in the integration tests
+that exercise the shared `rustycog-*` crates.
 
 ## Migration from Existing Code
 
 RustyCog is designed to be incrementally adoptable. You can start by:
 
-1. **Add error mapping**: Use `#[derive(ErrorMapper)]` on existing error enums
+1. **Standardize domain errors**: Start with `thiserror` enums and map them at the HTTP boundary
 2. **Introduce commands**: Wrap existing operations in command structs
 3. **Add structured configuration**: Replace ad-hoc config with `rustycog-config`
 4. **Improve testing**: Use test containers and HTTP testing utilities
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+We welcome contributions through issues and pull requests on GitHub.
 
 ## License
 

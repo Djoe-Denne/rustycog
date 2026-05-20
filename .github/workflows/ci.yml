@@ -28,25 +28,6 @@ jobs:
 
       - run: cargo fmt --all -- --check
 
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    needs: [fmt]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: clippy
-          cache-on-failure: true
-
-      - name: Run Clippy
-        run: cargo clippy --workspace --locked --all-features --lib --bins --examples --benches -- -D warnings
-
   test-coverage:
     name: Unit Tests And Coverage
     runs-on: ubuntu-latest
@@ -83,6 +64,25 @@ jobs:
           path: lcov.info
           if-no-files-found: warn
 
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    needs: [fmt]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: clippy
+          cache-on-failure: true
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --locked --all-features --lib --bins --examples --benches -- -D warnings
+
   sonar:
     name: SonarCloud
     runs-on: ubuntu-latest
@@ -116,22 +116,41 @@ jobs:
           shared-key: sonar
           cache-on-failure: true
 
-      - name: Run Clippy report
+      - name: Run Clippy report (production vs tests)
         run: |
           mkdir -p target/sonar
 
+          # Shared Clippy groups (stricter than workspace Cargo.toml defaults).
+          common_clippy=(
+            -W clippy::all
+            -W clippy::pedantic
+            -W clippy::nursery
+            -W clippy::cargo
+            -W clippy::todo
+            -W clippy::unimplemented
+            -A clippy::cargo_common_metadata
+            -A clippy::multiple_crate_versions
+          )
+
+          # Production: lib, binaries, examples (not tests/, not #[cfg(test)] in lib).
           cargo clippy --workspace --locked --all-features --lib --bins --examples --message-format=json -- \
-            -W clippy::all \
-            -W clippy::pedantic \
-            -W clippy::nursery \
-            -W clippy::cargo \
-            -W clippy::todo \
-            -W clippy::unimplemented \
-            -A clippy::cargo_common_metadata \
-            -A clippy::multiple_crate_versions \
-            -A clippy::missing_errors_doc \
-            -A clippy::missing_panics_doc \
-            > target/sonar/clippy.json
+            "${common_clippy[@]}" \
+            -W clippy::unwrap_used \
+            -W clippy::expect_used \
+            -W clippy::panic \
+            > target/sonar/clippy-production.jsonl
+
+          # Tests and benches: same groups, but allow unwrap/expect/panic where typical for tests.
+          cargo clippy --workspace --locked --all-features --tests --benches --message-format=json -- \
+            "${common_clippy[@]}" \
+            -A clippy::unwrap_used \
+            -A clippy::expect_used \
+            -A clippy::panic \
+            > target/sonar/clippy-tests.jsonl
+
+          # One report for Sonar (newline-delimited JSON). Possible duplicate lines for lib if
+          # the tests pass also type-checks the same crate; Sonar usually dedupes by rule + location.
+          cat target/sonar/clippy-production.jsonl target/sonar/clippy-tests.jsonl > target/sonar/clippy.json
 
       - name: SonarCloud scan
         uses: SonarSource/sonarqube-scan-action@v7

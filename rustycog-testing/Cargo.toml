@@ -14,7 +14,7 @@ categories = ["development-tools", "asynchronous"]
 rust-version = "1.84"
 
 [dependencies]
-rustycog-framework = { version = "0.1.0", path = "..", features = ["full", "test-utils"] }
+rustycog = { package = "rustycog-framework", version = "0.1.0", path = "..", features = ["full", "test-utils"] }
 testcontainers = "0.24"
 testcontainers-modules = "0.12"
 axum-test = "17"

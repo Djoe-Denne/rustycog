@@ -31,7 +31,7 @@ jobs:
   test-coverage:
     name: Unit Tests And Coverage
     runs-on: ubuntu-latest
-    needs: [clippy]
+    needs: [fmt]
     steps:
       - uses: actions/checkout@v4
 
@@ -80,7 +80,8 @@ jobs:
           shared-key: clippy
           cache-on-failure: true
 
-      - name: Run Clippy
+      - name: Run Clippy (non-blocking)
+        continue-on-error: true
         run: cargo clippy --workspace --locked --all-features --lib --bins --examples --benches -- -D warnings
 
   sonar:

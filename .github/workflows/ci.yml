@@ -36,6 +36,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            pkg-config \
+            libcurl4-openssl-dev \
+            zlib1g-dev \
+            libssl-dev \
+            libsasl2-dev \
+            libzstd-dev \
+            liblz4-dev
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview

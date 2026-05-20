@@ -33,7 +33,7 @@ This replaces Casbin matchers like `r.sub == p.sub && r.project == p.project && 
 
 ## Writing tuples
 
-The [[projects/sentinel-sync/sentinel-sync]] worker is the sole writer. It listens to domain events and maps each one to `Write` or `Delete` calls (see [[projects/sentinel-sync/references/event-to-tuple-mapping]]).
+An authorization-sync worker should be the sole writer. It listens to domain events and maps each one to `Write` or `Delete` calls.
 
 ## Reading tuples
 

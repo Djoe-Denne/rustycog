@@ -29,30 +29,27 @@ updated: 2026-04-19T11:49:06.1450368Z
 
 # RustyCog Service Construction Guides
 
-These guides use `[[projects/manifesto/manifesto]]` as a reference implementation for building services on top of `[[projects/rustycog/rustycog]]`. This page focuses on construction workflow and guide-vs-runtime drift, not crate API inventory.
+These guides describe how to build services on top of `[[projects/rustycog/rustycog]]`. This page focuses on construction workflow and guide-vs-runtime drift, not package API inventory.
 
 ## Key Ideas
 
 - The practical assembly order remains: typed config, logging init, DB pool, repositories/services, command registry, app state, route builder, then integration tests.
 - Composition root ownership stays explicit in setup crates so domain modules remain transport-agnostic.
 - Permission-wired routes still follow the same sequence: model files + fetcher wiring + required permission checks.
-- The guides remain useful as a procedural blueprint, but crate-level behavior now belongs to `[[projects/rustycog/references/index]]` and skills belong to `[[skills/building-rustycog-services]]`.
+- The guides remain useful as a procedural blueprint, but feature/module behavior now belongs to `[[projects/rustycog/references/index]]` and skills belong to `[[skills/building-rustycog-services]]`.
 - Guide/runtime drift is material and must be tracked explicitly:
   - Some documented knobs are inert in current runtime paths (`service.component_service.timeout_seconds`, `[command.retry]` in Manifesto). ^[ambiguous]
   - Logging/bootstrap defaults in docs and live startup code still diverge (`setup_logging` guidance vs direct tracing init). ^[ambiguous]
-  - README-era ergonomics around macros/examples are not visible in-tree. ^[ambiguous]
-  - Packaging scope drift persists (`rustycog-server` health-only, `rustycog-logger` out of root workspace members). ^[ambiguous]
+  - The historical `rustycog-server` reference still names a health-check-only module. ^[ambiguous]
 
 ## Open Questions
 
 - The guides are Manifesto-centric; cross-service conformance is still not mapped precisely.
 - Which behavior is normative for new services when docs and runtime disagree: guide recommendation or live implementation? ^[ambiguous]
-- Macro/example ergonomics promised by README-era docs are still unresolved in the checked-in tree. ^[ambiguous]
 
 ## Sources
 
 - [[skills/building-rustycog-services]] — Procedural workflow distilled from these sources
-- [[projects/rustycog/references/index]] — Crate-level behavior referenced by each construction step
-- [[projects/rustycog/references/index]] — Compact crate inventory for this workflow
+- [[projects/rustycog/references/index]] — Feature/module behavior referenced by each construction step
+- [[projects/rustycog/references/index]] — Compact feature inventory for this workflow
 - [[concepts/shared-rust-microservice-sdk]] — Cross-project SDK framing
-- [[projects/iamrusty/concepts/hexagonal-architecture]] — Service-boundary pattern the guides enforce

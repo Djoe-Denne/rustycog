@@ -34,7 +34,7 @@ updated: 2026-04-15T22:10:00Z
 
 # Structured Service Configuration
 
-Across `<!-- [[projects/iamrusty/iamrusty]] -->`, `<!-- [[projects/telegraph/telegraph]] -->`, `<!-- [[projects/hive/hive]] -->`, and `<!-- [[projects/manifesto/manifesto]] -->`, configuration is treated as typed runtime state rather than a loose collection of env vars. All four services build on shared loaders from `[[projects/rustycog/rustycog]]`, but they organize service-specific concerns differently.
+RustyCog treats configuration as typed runtime state rather than a loose collection of env vars. Consuming services build on shared loaders from `[[projects/rustycog/rustycog]]`, but can organize service-specific concerns differently.
 
 ## Key Ideas
 
@@ -60,13 +60,8 @@ Across `<!-- [[projects/iamrusty/iamrusty]] -->`, `<!-- [[projects/telegraph/tel
 
 ## Sources
 
-- <!-- [[projects/iamrusty/iamrusty]] --> - Service using the `IAM`-prefixed `AppConfig` variant.
-- <!-- [[projects/telegraph/telegraph]] --> - Service using `TELEGRAPH` plus queue-routing and communication sections.
-- <!-- [[projects/hive/hive]] --> - Service using `HIVE` plus outbound IAM and external-provider sections.
-- <!-- [[projects/iamrusty/references/iamrusty-runtime-and-security]] --> - IAMRusty-specific runtime, JWT, and queue details.
-- <!-- [[projects/telegraph/references/telegraph-runtime-and-configuration]] --> - Telegraph-specific queue, template, SMTP, and port behavior.
-- <!-- [[projects/hive/references/hive-runtime-and-configuration]] --> - Hive-specific command, queue, and outbound service behavior.
-- <!-- [[projects/manifesto/manifesto]] --> - Manifesto's concrete `MANIFESTO_*` loader path and partially wired config sections.
+- [[projects/rustycog/references/rustycog-config]] - Config module reference.
+- [[entities/queue-config]] - Queue transport selector and SQS fanout settings.
 - [[projects/rustycog/rustycog]] - Shared SDK project that provides config primitives across services.
 - [[projects/rustycog/references/rustycog-config]] - Crate-level details for typed config and queue structs.
 - [[entities/queue-config]] - Shared queue transport selector entity.

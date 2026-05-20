@@ -3,7 +3,7 @@ title: Relation Tuple
 category: entity
 tags: [entity, authorization, zanzibar, openfga]
 summary: >-
-  Zanzibar-shaped tuple (object, relation, user) that encodes one authorization fact. Stored in OpenFGA and written exclusively by the sentinel-sync worker.
+  Zanzibar-shaped tuple (object, relation, user) that encodes one authorization fact and is stored in OpenFGA.
 updated: 2026-04-20
 ---
 
@@ -24,8 +24,8 @@ Examples:
 
 ## Lifecycle
 
-- Written by [[projects/sentinel-sync/sentinel-sync]] when a domain event implies a new authorization fact.
-- Deleted by `sentinel-sync` when a reverse event (`*Removed`, `*Revoked`, `*Deleted`) undoes the fact.
+- Written by an authorization-sync path when a domain event implies a new authorization fact.
+- Deleted by the same sync path when a reverse event (`*Removed`, `*Revoked`, `*Deleted`) undoes the fact.
 - Never written directly by a request-handling service.
 
 ## Read path
@@ -35,5 +35,3 @@ Clients never read tuples directly. They ask OpenFGA derived questions via [[ent
 ## Related
 
 - [[concepts/zanzibar-relation-tuples]]
-- [[projects/sentinel-sync/references/event-to-tuple-mapping]]
-- [[projects/sentinel-sync/references/openfga-model]]

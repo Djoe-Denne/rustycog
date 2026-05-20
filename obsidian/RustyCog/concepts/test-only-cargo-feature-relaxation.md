@@ -131,11 +131,5 @@ unconditionally — or be gated themselves. In practice:
 
 ## See Also
 
-- [[projects/iamrusty/concepts/jwt-algorithm-enforcement-and-test-relaxation]]
-  for the canonical application of this pattern in the workspace, including
-  the open architectural question that the feature flag deliberately leaves
-  unresolved.
 - [[concepts/integration-testing-with-real-infrastructure]] for the broader
   test-with-real-things philosophy this pattern supports.
-- [[projects/iamrusty/concepts/jwt-secret-storage-abstraction]] for the
-  surrounding configuration layer.

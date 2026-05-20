@@ -9,7 +9,7 @@ updated: 2026-04-20
 
 # ResourceRef
 
-`rustycog_permission::ResourceRef` is the typed, OpenFGA-shaped resource identifier passed into every `check` call.
+`rustycog::permission::ResourceRef` is the typed, OpenFGA-shaped resource identifier passed into every `check` call.
 
 ```rust
 pub struct ResourceRef {

@@ -4,7 +4,7 @@ category: references
 tags: [reference, rustycog, server, visibility/internal]
 sources:
   - rustycog/rustycog-server/src/health.rs
-summary: rustycog-server currently exposes lightweight health-check abstractions rather than a full application bootstrap layer.
+summary: rustycog::server currently exposes lightweight health-check abstractions rather than a full application bootstrap layer.
 provenance:
   extracted: 0.9
   inferred: 0.04

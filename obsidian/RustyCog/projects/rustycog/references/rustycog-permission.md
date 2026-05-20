@@ -8,7 +8,7 @@ sources:
   - rustycog/rustycog-config/src/lib.rs
   - openfga/model.fga
 summary: >-
-  rustycog-permission defines PermissionChecker plus OpenFGA, in-memory, cache, and metrics implementations; shared OpenFGA config now lives in rustycog-config.
+  rustycog::permission defines PermissionChecker plus OpenFGA, in-memory, cache, and metrics implementations; shared OpenFGA config lives in rustycog::config.
 provenance:
   extracted: 0.9
   inferred: 0.07
@@ -52,7 +52,7 @@ let inner: Arc<dyn PermissionChecker> = if cache_ttl == 0 {
 let checker: Arc<dyn PermissionChecker> = Arc::new(MetricsPermissionChecker::new(inner));
 ```
 
-`OpenFgaClientConfig` is owned by `rustycog-config` and re-exported from `rustycog-permission` for compatibility. The split `scheme` / `host` / `port` fields mirror DB/SQS config so tests can set `port = 0`; `actual_port()` resolves that into a cached random host port for [[projects/rustycog/references/openfga-real-testcontainer-fixture]].
+`OpenFgaClientConfig` is owned by `rustycog::config` and re-exported from `rustycog::permission` for compatibility. The split `scheme` / `host` / `port` fields mirror DB/SQS config so tests can set `port = 0`; `actual_port()` resolves that into a cached random host port for [[projects/rustycog/references/openfga-real-testcontainer-fixture]].
 
 `cache_ttl_seconds` (added 2026-04-22) makes the cache decoration opt-out:
 
@@ -72,7 +72,6 @@ let checker: Arc<dyn PermissionChecker> = Arc::new(MetricsPermissionChecker::new
 - [[concepts/openfga-as-authorization-engine]]
 - [[concepts/zanzibar-relation-tuples]]
 - [[concepts/anonymous-public-read-via-wildcard-subject]] — `Subject::wildcard()` end-to-end, including Phase 2 hand-off for `sentinel-sync` tuple writes.
-- [[projects/sentinel-sync/sentinel-sync]]
 - [[projects/rustycog/references/rustycog-http]]
 - [[projects/rustycog/references/openfga-real-testcontainer-fixture]] — real OpenFGA fixture for service integration tests.
 - [[projects/rustycog/references/openfga-mock-service]] — historical wiremock-backed `Check` fake; superseded for Hive/Manifesto/Telegraph integration tests by the real fixture.

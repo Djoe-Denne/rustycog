@@ -17,7 +17,7 @@ updated: 2026-04-25T10:53:00Z
 
 # Using RustyCog Events
 
-Use this guide when integrating `<!-- [[projects/rustycog/references/rustycog-events]] -->` in service setup.
+Use this guide when integrating `rustycog::events` through `<!-- [[projects/rustycog/references/rustycog-events]] -->` in service setup.
 
 ## Workflow
 

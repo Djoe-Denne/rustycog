@@ -9,7 +9,7 @@ updated: 2026-04-20
 
 # Subject
 
-`rustycog_permission::Subject` identifies the caller on every authorization check.
+`rustycog::permission::Subject` identifies the caller on every authorization check.
 
 ```rust
 pub struct Subject { pub user_id: Uuid }

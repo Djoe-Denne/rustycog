@@ -41,7 +41,7 @@ updated: 2026-04-25T11:25:00Z
 
 # Integration Testing with Real Infrastructure
 
-`<!-- [[projects/iamrusty/iamrusty]] -->`, `<!-- [[projects/telegraph/telegraph]] -->`, `<!-- [[projects/hive/hive]] -->`, and `<!-- [[projects/manifesto/manifesto]] -->` all lean on integration tests that exercise real transport, database, and application state instead of treating orchestration code as something to mock away. The concrete stacks differ, but the repo-wide testing instinct is the same.
+RustyCog's testing layer favors integration tests that exercise real transport, database, and application state instead of treating orchestration code as something to mock away. The concrete stacks differ by consumer, but the framework testing instinct is the same.
 
 ## Key Ideas
 
@@ -70,13 +70,8 @@ updated: 2026-04-25T11:25:00Z
 
 ## Sources
 
-- <!-- [[projects/iamrusty/iamrusty]] --> - Service whose auth and queue flows exemplify the IAM side of the pattern.
-- <!-- [[projects/telegraph/telegraph]] --> - Service adding SQS and SMTP-backed delivery verification.
-- <!-- [[projects/hive/hive]] --> - Service adding DB-backed API tests and mocked external-provider integration.
-- <!-- [[projects/iamrusty/references/iamrusty-testing-and-fixtures]] --> - Concrete IAMRusty examples behind the original page.
-- <!-- [[projects/telegraph/references/telegraph-testing-and-smtp-fixtures]] --> - Concrete Telegraph examples for HTTP, SQS, and SMTP.
-- <!-- [[projects/hive/references/hive-testing-and-api-fixtures]] --> - Concrete Hive examples for HTTP, DB, and external-provider fixtures.
-- <!-- [[projects/manifesto/manifesto]] --> - Manifesto's real-server test harness built on the shared RustyCog test stack.
+- [[projects/rustycog/references/rustycog-testing]] - Shared integration-test toolbox.
+- [[skills/creating-testcontainer-fixtures]] - Fixture construction workflow.
 - [[projects/rustycog/rustycog]] - Shared SDK project that owns the reusable integration-test harness.
 - [[projects/rustycog/references/wiremock-mock-server-fixture]] - Singleton wiremock server reused by Hive, Telegraph, and the in-crate OpenFGA fake.
 - [[projects/rustycog/references/openfga-real-testcontainer-fixture]] - Real OpenFGA fixture for permission-gated service tests.

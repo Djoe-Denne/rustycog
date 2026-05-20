@@ -8,7 +8,7 @@ sources:
   - rustycog/rustycog-events/src/sqs.rs
   - rustycog/rustycog-outbox/src/lib.rs
   - rustycog/rustycog-config/src/lib.rs
-summary: rustycog-events defines domain event contracts plus Kafka/SQS/no-op transport factories; rustycog-outbox supplies the durable DB bridge separately.
+summary: rustycog::events defines domain event contracts plus Kafka/SQS/no-op transport factories; rustycog::outbox supplies the durable DB bridge separately.
 provenance:
   extracted: 0.92
   inferred: 0.05
@@ -34,18 +34,18 @@ updated: 2026-05-20T14:02:00Z
 - `SqsEventPublisher::publish_batch()` groups batch entries by destination queue before calling SQS batch APIs, so mixed event types do not accidentally share the first event's queue.
 - `SqsEventConsumer` starts one polling loop per configured SQS queue URL and shares the same `EventHandler` plus stop flag across those tasks.
 - Publisher and consumer health checks now inspect all configured SQS queues instead of probing only a single default queue.
-- `rustycog-events` remains transport-only; `[[projects/rustycog/references/rustycog-outbox]]` is the separate bridge crate for DB-backed event durability.
+- `rustycog::events` remains transport-only; `[[projects/rustycog/references/rustycog-outbox]]` is the separate bridge module for DB-backed event durability.
 
 ## Outbox Boundary
 
 ```mermaid
 flowchart LR
-    events["rustycog-events<br/>DomainEvent + EventPublisher"] --> transport["Kafka / SQS / No-op"]
-    db["rustycog-db<br/>write transaction"] --> outbox["rustycog-outbox<br/>recorder + dispatcher"]
+    events["rustycog::events<br/>DomainEvent + EventPublisher"] --> transport["Kafka / SQS / No-op"]
+    db["rustycog::db<br/>write transaction"] --> outbox["rustycog::outbox<br/>recorder + dispatcher"]
     outbox --> events
 ```
 
-`rustycog-outbox` depends on both DB and events so services can record event intent transactionally without adding database concerns to this crate.
+`rustycog::outbox` depends on both DB and events so services can record event intent transactionally without adding database concerns to the transport module.
 
 ## Linked Entities
 
@@ -62,5 +62,4 @@ flowchart LR
 
 - [[projects/rustycog/references/index]]
 - [[concepts/event-driven-microservice-platform]]
-- [[projects/telegraph/references/telegraph-event-processing]] - Concrete SQS-backed consumer and descriptor-driven delivery flow built on these abstractions.
 - [[projects/rustycog/rustycog]]

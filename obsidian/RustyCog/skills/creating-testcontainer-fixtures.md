@@ -37,7 +37,7 @@ For SQS producer-routing tests, use the fixture as a queue spy, not just a broke
 | Where | When | Wiki examples |
 |---|---|---|
 | `rustycog/rustycog-testing/src/common/<thing>_testcontainer.rs` | The infra is a generic platform capability multiple services will reuse | `sqs_testcontainer.rs`, `kafka_testcontainer.rs`, `openfga_testcontainer.rs` ([[projects/rustycog/references/rustycog-testing]]) |
-| `<Service>/tests/fixtures/<thing>/testcontainer.rs` | Only that service interacts with this protocol, or wire-level parsing is service-specific | Telegraph's `TestSmtp` MailHog container ([[projects/telegraph/references/telegraph-testing-and-smtp-fixtures]]) |
+| `<Service>/tests/fixtures/<thing>/testcontainer.rs` | Only that service interacts with this protocol, or wire-level parsing is service-specific | A service-local MailHog or protocol fixture |
 
 The heuristic: if production has a `[[projects/rustycog/rustycog]]` shared client for it (event publisher, DB pool), the fixture goes shared. If only one service speaks to it, keep it service-local — the rest of the workspace doesn't need a Cargo dependency on a container they will never start.
 
@@ -174,7 +174,7 @@ The default choice should be `port = 0` for new fixtures. Switch to fixed only w
 
 ## Step 4: Wire the fixture into `setup_test_server()`
 
-Mirror what Telegraph and the existing SQS path do: construct the container *before* the app boots, then clear any prior in-container state at the top of `setup_test_server()` for isolation. From [[projects/telegraph/references/telegraph-testing-and-smtp-fixtures]]:
+Mirror the existing SQS path: construct the container *before* the app boots, then clear any prior in-container state at the top of `setup_test_server()` for isolation.
 
 > `setup_test_server()` creates a `TelegraphTestFixture`, clears prior SMTP state, then boots the app through the shared RustyCog test-server path so the service is exercised with real infrastructure rather than a mocked shell.
 
@@ -213,13 +213,12 @@ LocalStack ships an `/_localstack/health` endpoint, MailHog uses `/api/v1/messag
 
 ## When Not To Use This
 
-If the test only needs to assert on what the service *would have sent* under a controlled response, [[skills/stubbing-http-with-wiremock|wiremock]] is faster, more deterministic, and parallelizes better. Real testcontainers earn their cost when the assertion targets the protocol itself: SMTP framing, queue-broker semantics, SQL parser behavior, real serializer output, etc. Telegraph deliberately keeps both `SmtpService` (wiremock) and `TestSmtp` (MailHog testcontainer) side by side for exactly this reason — see [[projects/telegraph/references/telegraph-testing-and-smtp-fixtures]].
+If the test only needs to assert on what the service *would have sent* under a controlled response, [[skills/stubbing-http-with-wiremock|wiremock]] is faster, more deterministic, and parallelizes better. Real testcontainers earn their cost when the assertion targets the protocol itself: SMTP framing, queue-broker semantics, SQL parser behavior, real serializer output, etc.
 
 ## Sources
 
 - [[projects/rustycog/references/rustycog-testing]] — descriptor model and the catalog of existing shared fixtures.
 - [[concepts/integration-testing-with-real-infrastructure]] — when to choose real infra over mocks.
-- [[projects/telegraph/references/telegraph-testing-and-smtp-fixtures]] — canonical service-local testcontainer with both REST-API and protocol surfaces.
 - [[projects/rustycog/references/wiremock-mock-server-fixture]] — sister pattern for the HTTP-stub case; cross-reference when both fixtures coexist.
 - [[skills/stubbing-http-with-wiremock]] — the stub-based alternative this skill complements.
 - [[projects/rustycog/references/openfga-mock-service]] — factory-returning-handle example to mirror when extending `setup_test_server()`.

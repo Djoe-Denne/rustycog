@@ -87,7 +87,6 @@ If the queue is down, the project commit still succeeds and the outbox row remai
 
 ## Related Notes
 
-- [[projects/aiforall/roadmap]]
 - [[concepts/event-driven-microservice-platform]]
 - [[projects/rustycog/references/rustycog-db]]
 - [[projects/rustycog/references/rustycog-events]]

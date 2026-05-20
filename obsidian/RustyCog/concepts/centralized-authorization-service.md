@@ -3,18 +3,18 @@ title: Centralized Authorization Service
 category: concept
 tags: [concept, authorization, architecture, sentinel-sync]
 summary: >-
-  AIForAll centralizes authorization in OpenFGA with a small sentinel-sync worker feeding it tuples. Client services stop owning permission models and fetchers; they only call Check before entering domain logic.
+  RustyCog centralizes authorization around OpenFGA and a tuple-sync path. Client services stop owning permission models and fetchers; they only call Check before entering domain logic.
 updated: 2026-04-20
 ---
 
 # Centralized Authorization Service
 
-For a long time, each service (Hive, Manifesto, Telegraph) shipped its own Casbin `.conf` file plus a `PermissionsFetcher` implementation that loaded per-user/per-resource policy rows into a per-request enforcer. That produced three independent decision surfaces that nonetheless had to agree about cross-service questions like "can an org admin edit any project under their org?".
+For a long time, consuming services shipped their own Casbin `.conf` file plus a `PermissionsFetcher` implementation that loaded per-user/per-resource policy rows into a per-request enforcer. That produced independent decision surfaces that nonetheless had to agree about cross-service authorization questions.
 
 The centralized authorization service pattern fixes that by splitting the problem into three roles:
 
 1. **Engine** — OpenFGA, the only place that answers "is this allowed?". See [[concepts/openfga-as-authorization-engine]].
-2. **Sync worker** — [[projects/sentinel-sync/sentinel-sync]], the only writer into OpenFGA. It translates domain events into relation tuples.
+2. **Sync worker** — the only writer into OpenFGA. It translates domain events into relation tuples.
 3. **Client** — every HTTP-facing service, which only calls `Check` through [[entities/permission-checker]] and otherwise stays out of the authorization business.
 
 ## Deprecated pattern
@@ -29,6 +29,5 @@ The replaced pattern is documented (and marked deprecated) at [[concepts/resourc
 
 ## Related
 
-- [[projects/sentinel-sync/sentinel-sync]]
 - [[concepts/zanzibar-relation-tuples]]
 - [[entities/permission-checker]]

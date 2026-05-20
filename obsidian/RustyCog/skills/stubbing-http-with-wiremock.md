@@ -109,6 +109,6 @@ If the test is verifying protocol-level behavior of the real collaborator (SMTP 
 - [[projects/rustycog/references/openfga-mock-service]] — in-crate consumer with the canonical reset-and-deny pattern, plus the `cache_ttl_seconds = 0` companion setting.
 - [[skills/creating-testcontainer-fixtures]] — sister skill for the real-protocol testcontainer alternative.
 - [[projects/rustycog/references/rustycog-testing]] — parent crate where the fixture lives.
-- [[projects/hive/references/hive-testing-and-api-fixtures]] — Hive's `ExternalProviderMockService` recipe.
-- [[projects/telegraph/references/telegraph-testing-and-smtp-fixtures]] — Telegraph's `SmtpService` recipe and scenario builder.
+- [[projects/rustycog/references/wiremock-mock-server-fixture]] — shared fixture behavior.
+- [[projects/rustycog/references/openfga-mock-service]] — in-framework OpenFGA wrapper around the shared fixture.
 - [[concepts/integration-testing-with-real-infrastructure]] — when to mock vs. when to run a real container.

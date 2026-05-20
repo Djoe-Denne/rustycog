@@ -5,7 +5,7 @@ tags: [rustycog, logging, skills, visibility/internal]
 sources:
   - rustycog/rustycog-logger/src/lib.rs
   - rustycog/rustycog-config/src/lib.rs
-summary: Procedure for initializing tracing with rustycog-logger and wiring config-driven level/filter/Loki behavior.
+summary: Procedure for initializing tracing with rustycog::logger and wiring config-driven level/filter/Loki behavior.
 provenance:
   extracted: 0.88
   inferred: 0.05

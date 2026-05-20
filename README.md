@@ -1,10 +1,12 @@
 # RustyCog SDK
 
-A comprehensive SDK for building microservices in Rust, extracted from production-ready patterns and best practices.
+A feature-gated SDK for building microservices in Rust, extracted from production-ready patterns and best practices.
 
 ## Overview
 
-RustyCog provides a set of crates that handle the common concerns of microservice development, allowing you to focus on your business logic. It's designed around clean architecture principles with clear separation of concerns.
+RustyCog provides one runtime package, `rustycog-framework`, that handles common microservice concerns through feature-gated modules. Consumers typically alias the package as `rustycog` in `Cargo.toml`, then import modules such as `rustycog::core`, `rustycog::config`, `rustycog::http`, and `rustycog::events`.
+
+The historical `rustycog-*` crate names now describe module/reference boundaries inside the unified runtime package. Integration-test helpers remain separate in the `rustycog-testing` package.
 
 ## Features
 
@@ -46,10 +48,19 @@ RustyCog provides a set of crates that handle the common concerns of microservic
 
 ```toml
 [dependencies]
-rustycog-core = "0.1"
-rustycog-server = "0.1"
-rustycog-http = "0.1"
+rustycog = { package = "rustycog-framework", version = "0.1", default-features = false, features = [
+    "core",
+    "config",
+    "command",
+    "events",
+    "http",
+] }
+
+[dev-dependencies]
+rustycog-testing = "0.1"
 ```
+
+For broad application crates, use `features = ["full"]`. For libraries, prefer the smallest feature set that exposes the modules you actually use.
 
 ### 2. Define your domain errors
 
@@ -72,7 +83,8 @@ pub enum UserError {
 ### 3. Create commands
 
 ```rust
-use rustycog_core::{Command, CommandContext};
+use rustycog::command::{Command, CommandContext, CommandError};
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct CreateUserCommand {
@@ -87,29 +99,32 @@ impl Command for CreateUserCommand {
     fn command_type(&self) -> &'static str { "create_user" }
     fn command_id(&self) -> Uuid { self.context.execution_id }
     
-    fn validate(&self) -> Result<(), ServiceError> {
+    fn validate(&self) -> Result<(), CommandError> {
         if self.email.is_empty() {
-            return Err(ServiceError::validation_field("Email required", "email"));
+            return Err(CommandError::validation("email_required", "Email required"));
         }
         Ok(())
     }
-    
-    fn context(&self) -> &CommandContext { &self.context }
-    fn set_context(&mut self, context: CommandContext) { self.context = context; }
 }
 ```
 
 ### 4. Implement your service
 
 ```rust
+use rustycog::events::EventPublisher;
+use rustycog::core::error::ServiceError;
+use std::sync::Arc;
+
 pub struct UserService {
     repository: Arc<dyn UserRepository>,
-    event_publisher: Arc<dyn EventPublisher>,
+    event_publisher: Arc<dyn EventPublisher<ServiceError>>,
 }
 
 impl UserService {
-    pub async fn create_user(&self, command: CreateUserCommand) -> Result<User, UserError> {
-        command.validate()?;
+    pub async fn create_user(&self, command: CreateUserCommand) -> Result<User, ServiceError> {
+        command
+            .validate()
+            .map_err(|err| ServiceError::validation(err.message()))?;
         
         // Business logic here
         let user = User::new(command.username, command.email);
@@ -119,7 +134,7 @@ impl UserService {
         
         // Publish domain event
         let event = UserCreatedEvent::new(user.id);
-        self.event_publisher.publish(Box::new(event)).await?;
+        self.event_publisher.publish(&event).await?;
         
         Ok(user)
     }
@@ -152,51 +167,59 @@ RustyCog follows clean architecture principles:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Crates
+## Feature Modules
 
-### `rustycog-core`
-Core abstractions and traits that all other crates depend on.
+The runtime surface is one package with optional modules:
 
-### `rustycog-server`
-Server setup and application bootstrapping utilities.
+### `rustycog::core` (`core`)
+Core error contracts shared by the other modules.
 
-### `rustycog-command`
+### `rustycog::command` (`command`)
 Generic command pattern implementation with:
 - Command registry and routing
 - Retry policies and circuit breakers
 - Metrics collection
 - Validation framework
 
-### `rustycog-db`
+### `rustycog::config` (`config`)
+Configuration management:
+- Environment-based configuration
+- Validation
+- Type-safe configuration structs
+
+### `rustycog::db` (`db`)
 Database management utilities:
 - Connection pooling with read/write split
 - Migration management
 - Repository pattern implementations
 
-### `rustycog-events`
+### `rustycog::events` (`events`)
 Event publishing and subscription:
 - Kafka integration
+- SQS integration
 - Domain event patterns
-- Test utilities
 
-### `rustycog-http`
+### `rustycog::http` (`http`)
 HTTP server utilities:
 - Axum integration
 - Error response formatting
 - Middleware
 - Request/response validation
 
-### `rustycog-config`
-Configuration management:
-- Environment-based configuration
-- Validation
-- Type-safe configuration structs
+### `rustycog::permission` (`permission`)
+Authorization primitives and OpenFGA-backed permission checks.
+
+### `rustycog::outbox` (`outbox`)
+Transactional outbox support for durable event dispatch.
+
+### `rustycog::logger` (`logger`)
+Tracing and logging initialization helpers.
+
+### `rustycog::server` (`server`)
+Health-check abstractions.
 
 ### `rustycog-testing`
-Testing utilities:
-- Test containers for databases and Kafka
-- HTTP testing helpers
-- Fixture management
+Separate testing package with testcontainers, HTTP helpers, wiremock fixtures, and real infrastructure bootstrap utilities.
 
 ## Error Handling Philosophy
 
@@ -234,12 +257,12 @@ struct CreateUserCommand { /* ... */ }
 
 // 2. Implement validation
 impl Command for CreateUserCommand {
-    fn validate(&self) -> Result<(), ServiceError> { /* ... */ }
+    fn validate(&self) -> Result<(), CommandError> { /* ... */ }
 }
 
 // 3. Handle the command
 impl CommandHandler<CreateUserCommand> for UserService {
-    async fn handle(&self, command: CreateUserCommand) -> Result<User, ServiceError> {
+    async fn handle(&self, command: CreateUserCommand) -> Result<User, CommandError> {
         // Business logic here
     }
 }
@@ -262,7 +285,7 @@ pub struct AppConfig {
 }
 
 // Automatically loaded from environment variables or config files
-let config = rustycog_config::load::<AppConfig>()?;
+let config = rustycog::config::load_config_fresh::<AppConfig>()?;
 ```
 
 ## Testing
@@ -297,9 +320,9 @@ async fn test_create_user() {
 
 ## Examples
 
-Reference implementations currently live in this monorepo's service crates
+Reference implementations currently live in this repository's service consumers
 (`IAMRusty`, `Hive`, `Manifesto`, `Telegraph`) and in the integration tests
-that exercise the shared `rustycog-*` crates.
+that exercise the unified `rustycog-framework` package plus `rustycog-testing`.
 
 ## Migration from Existing Code
 
@@ -307,7 +330,7 @@ RustyCog is designed to be incrementally adoptable. You can start by:
 
 1. **Standardize domain errors**: Start with `thiserror` enums and map them at the HTTP boundary
 2. **Introduce commands**: Wrap existing operations in command structs
-3. **Add structured configuration**: Replace ad-hoc config with `rustycog-config`
+3. **Add structured configuration**: Replace ad-hoc config with `rustycog::config`
 4. **Improve testing**: Use test containers and HTTP testing utilities
 
 ## Contributing

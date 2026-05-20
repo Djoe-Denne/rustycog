@@ -154,5 +154,4 @@ When mounting `mock_check_*` stubs, use the trailing UUID from the URL the test 
 - [[concepts/anonymous-public-read-via-wildcard-subject]] — how `mock_check_allow_wildcard` ties into the production wildcard-subject flow.
 - [[skills/stubbing-http-with-wiremock]] — recipe for authoring sibling fixtures (Hive/Telegraph style).
 - [[skills/using-rustycog-permission]] — wiring the production checker into a service.
-- [[projects/manifesto/references/manifesto-testing-and-fixtures]] — canonical consumer of this fixture today.
 - [[concepts/integration-testing-with-real-infrastructure]] — when to mock vs. when to run a real backing service.

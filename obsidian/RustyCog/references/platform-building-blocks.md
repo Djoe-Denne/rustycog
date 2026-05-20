@@ -14,7 +14,7 @@ sources:
   - rustycog/rustycog-testing/src/common/sqs_testcontainer.rs
   - hive-events/README.md
 summary: >-
-  Source summary for the shared Rust SDK stack (unified `rustycog` crate + `rustycog-testing`) and event-contract packages that give services a common runtime, transport, and testing foundation.
+  Source summary for the shared Rust SDK stack (`rustycog-framework` aliased as `rustycog`, plus `rustycog-testing`) and event-contract packages that give services a common runtime, transport, and testing foundation.
 provenance:
   extracted: 0.86
   inferred: 0.09
@@ -25,7 +25,7 @@ updated: 2026-05-20T14:07:00Z
 
 # Platform Building Blocks
 
-These sources cover the shared platform substrate beneath application services: `[[projects/rustycog/rustycog]]` for runtime mechanics and `<!-- [[projects/hive-events/hive-events]] -->` for domain event contracts.
+These sources cover the shared platform substrate beneath application services: `[[projects/rustycog/rustycog]]` for runtime mechanics and domain event transport contracts.
 
 ## Key Ideas
 
@@ -43,7 +43,6 @@ These sources cover the shared platform substrate beneath application services: 
 ## Sources
 
 - [[projects/rustycog/rustycog]] — Shared SDK project
-- <!-- [[projects/hive-events/hive-events]] --> — Event-contract project
 - [[projects/rustycog/references/index]] — Canonical RustyCog module/feature inventory
 - [[concepts/shared-rust-microservice-sdk]] — Architectural framing of the SDK model
 - [[references/rustycog-service-construction]] — Construction-level guidance using this substrate

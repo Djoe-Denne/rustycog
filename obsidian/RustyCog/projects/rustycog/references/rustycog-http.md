@@ -5,13 +5,12 @@ tags: [reference, rustycog, http, visibility/internal]
 sources:
   - rustycog/rustycog-http/src/lib.rs
   - rustycog/rustycog-http/src/builder.rs
-  - monolith/src/runtime.rs
   - rustycog/rustycog-http/src/error.rs
   - rustycog/rustycog-http/src/extractors.rs
   - rustycog/rustycog-http/src/middleware_permission.rs
   - rustycog/rustycog-http/src/tracing_middleware.rs
   - rustycog/rustycog-http/src/jwt_handler.rs
-summary: rustycog-http provides the Axum service shell, including router creation, reusable serving, auth wiring, centralized permission guards, validation, and tracing/error helpers.
+summary: rustycog::http provides the Axum service shell, including router creation, reusable serving, auth wiring, centralized permission guards, validation, and tracing/error helpers.
 provenance:
   extracted: 0.91
   inferred: 0.06
@@ -28,7 +27,7 @@ updated: 2026-05-20T14:02:00Z
 
 - `AppState` carries three shared handles: the `GenericCommandService`, a `UserIdExtractor`, and an `Arc<dyn PermissionChecker>` built once in the composition root and reused for every request.
 - `RouteBuilder` gives a fluent setup API for routes, auth mode (`authenticated` / `might_be_authenticated`), a single permission guard method, middleware, and `/health`.
-- `RouteBuilder::into_router()` finalizes routes into an Axum router without binding a port, which allows service routers to be nested inside `[[projects/aiforall/references/modular-monolith-runtime]]`.
+- `RouteBuilder::into_router()` finalizes routes into an Axum router without binding a port, which allows service routers to be nested inside an embedding runtime.
 - `serve_router(router, ServerConfig)` chooses HTTPS (`axum_server` + rustls) when `ServerConfig.tls_enabled`, otherwise plain HTTP.
 - `RouteBuilder::build()` remains the standalone-service compatibility API and delegates to `into_router()` plus `serve_router()`.
 - `ValidatedJson<T>` enforces body validation through the `validator` crate.
@@ -76,8 +75,6 @@ RouteBuilder::new(state)
 ## Related
 
 - [[projects/rustycog/references/rustycog-permission]]
-- [[projects/sentinel-sync/sentinel-sync]]
-- [[projects/aiforall/references/modular-monolith-runtime]]
 - [[concepts/openfga-as-authorization-engine]]
 
 ## Sources

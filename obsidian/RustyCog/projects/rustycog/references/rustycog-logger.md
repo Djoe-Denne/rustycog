@@ -6,7 +6,7 @@ sources:
   - rustycog/rustycog-logger/src/lib.rs
   - rustycog/rustycog-config/src/lib.rs
   - rustycog/Cargo.toml
-summary: rustycog-logger centralizes tracing initialization, including feature-flagged Scaleway Loki wiring and safe repeated setup behavior for tests and nested startup paths.
+summary: rustycog::logger centralizes tracing initialization, including feature-flagged Scaleway Loki wiring and safe repeated setup behavior for tests and nested startup paths.
 provenance:
   extracted: 0.9
   inferred: 0.06

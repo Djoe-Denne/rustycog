@@ -29,7 +29,7 @@ updated: 2026-04-19T11:49:06.1450368Z
 >
 > The content below is kept for historical context.
 
-Across `[[projects/manifesto/manifesto]]`, `<!-- [[projects/hive/hive]] -->`, and `<!-- [[projects/telegraph/telegraph]] -->`, route authorization is not just a static route-level ACL. `rustycog_http::RouteBuilder` provides the shell, but each service supplies domain-backed `PermissionsFetcher` implementations that turn the current route's resource IDs into effective permissions.
+Historically, route authorization was not just a static route-level ACL. `rustycog::http::RouteBuilder` provided the shell, while consuming services supplied domain-backed `PermissionsFetcher` implementations that turned the current route's resource IDs into effective permissions.
 
 ## Key Ideas
 
@@ -51,9 +51,8 @@ Across `[[projects/manifesto/manifesto]]`, `<!-- [[projects/hive/hive]] -->`, an
 
 ## Sources
 
-- [[projects/manifesto/concepts/component-instance-permissions]] - Manifesto's generic-plus-instance permission model.
-- <!-- [[projects/hive/concepts/organization-resource-authorization]] --> - Hive's organization-scoped specialization of the same pattern.
-- <!-- [[projects/telegraph/telegraph]] --> - Telegraph's narrower notification-ownership usage of the shared contract.
+- [[concepts/centralized-authorization-service]] - Replacement pattern based on a shared `PermissionChecker`.
+- [[projects/rustycog/references/rustycog-permission]] - Current checker stack.
 - [[projects/rustycog/rustycog]] - SDK project where RouteBuilder and permission middleware live.
 - [[projects/rustycog/references/rustycog-permission]] - Crate-level authorization engine details.
 - [[entities/permissions-fetcher]] - Shared fetcher entity definition.

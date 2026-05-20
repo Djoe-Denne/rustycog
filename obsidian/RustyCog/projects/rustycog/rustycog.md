@@ -16,7 +16,7 @@ sources:
   - Manifesto/docs/rustycog-service-build-guide.md
   - Manifesto/docs/rustycog-implementation-and-usage-guide.md
 summary: >-
-  RustyCog now ships as one feature-gated crate (`rustycog`) plus a separate `rustycog-testing` crate, while preserving module-level runtime building blocks.
+  RustyCog now ships as one feature-gated runtime package (`rustycog-framework`, usually aliased as `rustycog`) plus a separate `rustycog-testing` package, while preserving module-level runtime building blocks.
 provenance:
   extracted: 0.79
   inferred: 0.09
@@ -35,7 +35,7 @@ RustyCog is the shared Rust framework used to compose service runtime concerns a
 
 ## Canonical Scope
 
-RustyCog now exposes one crate (`rustycog`) with feature-gated module surfaces, plus one separate testing crate:
+RustyCog now exposes one runtime package (`rustycog-framework`) with feature-gated module surfaces. Consumers usually alias it as `rustycog` in `Cargo.toml`, so code imports keep the concise `rustycog::...` form. Testing helpers remain in one separate package, `rustycog-testing`.
 
 - [[projects/rustycog/references/rustycog-core]] — `rustycog::core` (`core` feature), shared error contracts (`ServiceError`, `DomainError`)
 - [[projects/rustycog/references/rustycog-command]] — `rustycog::command` (`command` feature), command execution runtime and registry
@@ -52,13 +52,13 @@ RustyCog now exposes one crate (`rustycog`) with feature-gated module surfaces, 
 
 ## Packaging Decision
 
-- Runtime/service crates should depend on `rustycog` and select explicit features (`core`, `config`, `http`, `events`, etc., or `full` when needed).
+- Runtime/service crates should depend on `rustycog = { package = "rustycog-framework", ... }` and select explicit features (`core`, `config`, `http`, `events`, etc., or `full` when needed).
 - Integration tests should continue to use `rustycog-testing`, which depends on `rustycog` with `full` and `test-utils`.
 - Historical `rustycog-*` per-crate dependencies are deprecated in this repository.
 
 ## Recent Runtime Decisions
 
-- SQS fanout now belongs to the shared `[[projects/rustycog/references/rustycog-events]]` and `[[projects/rustycog/references/rustycog-config]]` crates: services declare per-event destination queue lists, and RustyCog handles publishing the same event to each queue.
+- SQS fanout now belongs to the shared `[[projects/rustycog/references/rustycog-events]]` and `[[projects/rustycog/references/rustycog-config]]` modules: services declare per-event destination queue lists, and RustyCog handles publishing the same event to each queue.
 - SQS consumers now derive their polling pool from configured physical queues, which lets a service independently consume each queue while sharing one handler.
 - `[[projects/rustycog/references/rustycog-outbox]]` now owns the DB-backed event intent table and embedded dispatcher, so services can commit domain rows and event intent atomically without coupling `rustycog-events` to the database.
 
@@ -71,7 +71,6 @@ RustyCog now exposes one crate (`rustycog`) with feature-gated module surfaces, 
 
 ## Scope Mismatches To Track
 
-- README mentions `rustycog-macros` and examples that are not visible in the checked-in tree. ^[ambiguous]
 - `rustycog-server` name suggests broader server bootstrap ownership, but current surface is health-only. ^[ambiguous]
 
 ## Sources
@@ -79,4 +78,4 @@ RustyCog now exposes one crate (`rustycog`) with feature-gated module surfaces, 
 - [[projects/rustycog/references/index]] — Inventory and scope boundaries for all runtime modules/features
 - [[references/platform-building-blocks]] — Shared SDK plus event-contract context
 - [[concepts/shared-rust-microservice-sdk]] — Cross-project framing for the same stack
-- [[skills/building-rustycog-services]] — Service composition workflow using these crates
+- [[skills/building-rustycog-services]] — Service composition workflow using these modules/packages

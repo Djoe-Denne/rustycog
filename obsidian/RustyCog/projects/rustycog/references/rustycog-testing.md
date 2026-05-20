@@ -26,7 +26,7 @@ updated: 2026-05-20T14:03:00Z
 
 # RustyCog Testing
 
-`rustycog-testing` is the shared integration-test toolbox for services built on `[[projects/rustycog/rustycog]]`, and remains intentionally separate from the unified runtime crate.
+`rustycog-testing` is the shared integration-test toolbox for services built on `[[projects/rustycog/rustycog]]`, and remains intentionally separate from the unified runtime package.
 
 ## Key Ideas
 

@@ -5,7 +5,7 @@ tags: [reference, rustycog, database, visibility/internal]
 sources:
   - rustycog/rustycog-db/src/lib.rs
   - rustycog/rustycog-config/src/lib.rs
-summary: rustycog-db implements DbConnectionPool with write/read split, replica fallback, and round-robin read routing over SeaORM connections.
+summary: rustycog::db implements DbConnectionPool with write/read split, replica fallback, and round-robin read routing over SeaORM connections.
 provenance:
   extracted: 0.9
   inferred: 0.04

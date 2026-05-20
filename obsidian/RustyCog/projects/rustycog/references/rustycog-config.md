@@ -5,7 +5,7 @@ tags: [reference, rustycog, configuration, visibility/internal]
 sources:
   - rustycog/rustycog-config/src/lib.rs
 summary: >-
-  rustycog-config provides shared typed config primitives, including DB, OpenFGA, and QueueConfig with per-event SQS destination lists.
+  rustycog::config provides shared typed config primitives, including DB, OpenFGA, and QueueConfig with per-event SQS destination lists.
 provenance:
   extracted: 0.89
   inferred: 0.07

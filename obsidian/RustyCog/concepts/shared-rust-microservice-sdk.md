@@ -20,7 +20,7 @@ sources:
   - Manifesto/docs/rustycog-service-build-guide.md
   - Manifesto/docs/rustycog-implementation-and-usage-guide.md
 summary: >-
-  RustyCog is the shared SDK stack for platform services, centered on one feature-gated runtime crate (`rustycog`) plus one dedicated testing crate (`rustycog-testing`).
+  RustyCog is the shared SDK stack for platform services, centered on one feature-gated runtime package (`rustycog-framework`, usually aliased as `rustycog`) plus one dedicated testing package (`rustycog-testing`).
 provenance:
   extracted: 0.78
   inferred: 0.08
@@ -35,17 +35,17 @@ updated: 2026-05-20T14:07:00Z
 
 ## Key Ideas
 
-- The SDK is split by concern (errors, command runtime, config, DB, events, HTTP shell, permissions, logging, tests) so services compose only needed features/modules without redefining runtime primitives.
+- The SDK is split by concern (errors, command runtime, config, DB, events, HTTP shell, permissions, logging, tests) so services compose only needed features/modules from the unified package without redefining runtime primitives.
 - RustyCog standardizes composition seams, not business logic: services still own domain models, handlers, route sets, and policy choices. Authorization itself is centralized in OpenFGA via [[concepts/centralized-authorization-service]] — services only call `Check`.
 - Shared entities (`ServiceError`, `CommandRegistry`, `QueueConfig`, `RouteBuilder`, `PermissionChecker`, `DomainEvent`, and others) are documented in `[[entities/index]]` as a common vocabulary for service docs.
 - Cross-service consistency comes from repeating the same integration boundaries (config -> command -> HTTP -> permissions/events/testing), not from one monolithic starter template.
-- Consumption is now explicit: runtime crates depend on `rustycog` with selected features, and integration suites depend on `rustycog-testing`.
+- Consumption is now explicit: runtime crates depend on `rustycog = { package = "rustycog-framework", ... }` with selected features, and integration suites depend on `rustycog-testing`.
 
 ## Open Questions
 
 - The wiki still lacks a service-by-service adoption matrix for the active RustyCog feature sets.
 - Stable vs evolving RustyCog surfaces are not yet marked explicitly for consumers.
-- Some packaging and runtime edges remain ambiguous (`rustycog-server` scope, README macro references). ^[ambiguous]
+- Some runtime edges remain ambiguous, especially the current health-only scope behind the historical `rustycog-server` reference. ^[ambiguous]
 
 ## Sources
 

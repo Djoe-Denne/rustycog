@@ -72,7 +72,7 @@ Tests arrange real relation tuples instead of stubbing HTTP responses:
 
 The old wiremock fake usually started from a permissive default (`mock_check_any(true)`) and then overrode specific denial cases. The real OpenFGA fixture denies by default, so every happy-path protected route must seed explicit tuples before the request. Denial tests usually need no tuple setup.
 
-For create flows where production authorization tuples would normally be written asynchronously by [[projects/sentinel-sync/references/sentinel-sync-worker]], the test must either seed the expected tuple manually or explicitly simulate the sync result after the domain event is created. ^[inferred]
+For create flows where production authorization tuples would normally be written asynchronously by a tuple-sync worker, the test must either seed the expected tuple manually or explicitly simulate the sync result after the domain event is created. ^[inferred]
 
 ## Related
 
@@ -81,4 +81,3 @@ For create flows where production authorization tuples would normally be written
 - [[projects/rustycog/references/rustycog-permission]]
 - [[concepts/integration-testing-with-real-infrastructure]]
 - [[skills/creating-testcontainer-fixtures]]
-- [[projects/sentinel-sync/references/sentinel-sync-worker]]

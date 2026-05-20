@@ -8,7 +8,7 @@ sources:
   - rustycog/rustycog-command/src/registry.rs
   - rustycog/rustycog-command/src/token.rs
   - rustycog/rustycog-config/src/lib.rs
-summary: rustycog-command provides the typed command runtime with CommandError boundaries, type-erased handler registration, retry/timeout orchestration, and registry-backed execution surfaces.
+summary: rustycog::command provides the typed command runtime with CommandError boundaries, type-erased handler registration, retry/timeout orchestration, and registry-backed execution surfaces.
 provenance:
   extracted: 0.9
   inferred: 0.06
@@ -47,5 +47,4 @@ updated: 2026-05-20T14:02:00Z
 
 - [[projects/rustycog/references/index]]
 - [[concepts/command-registry-and-retry-policies]]
-- [[projects/telegraph/concepts/queue-driven-command-processing]] - Concrete queue-first example of the same registry and service model.
 - [[projects/rustycog/rustycog]]

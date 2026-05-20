@@ -18,7 +18,7 @@ updated: 2026-04-20
 - Delete the per-service `.conf` files under `resources/permissions/`.
 - Replace the `permissions_dir` / `resource` / `with_permission_fetcher` / `with_permission` chain in route setup with a single `with_permission_on(Permission, object_type)` call.
 - Inject `Arc<dyn PermissionChecker>` into `AppState` (see [[entities/route-builder]]).
-- Translate the domain events your service already emits into OpenFGA tuples via the [[projects/sentinel-sync/sentinel-sync]] worker; the checker then sees the same authorization facts the old fetcher used to compute.
+- Translate the domain events your service already emits into OpenFGA tuples through an authorization-sync path; the checker then sees the same authorization facts the old fetcher used to compute.
 
 ## Rationale
 

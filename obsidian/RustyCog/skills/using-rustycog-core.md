@@ -4,7 +4,7 @@ category: skills
 tags: [rustycog, errors, skills, visibility/internal]
 sources:
   - rustycog/rustycog-core/src/error.rs
-summary: Practical steps for adopting rustycog-core error primitives and keeping error behavior consistent across layers.
+summary: Practical steps for adopting rustycog::core error primitives and keeping error behavior consistent across layers.
 provenance:
   extracted: 0.89
   inferred: 0.05
@@ -15,7 +15,7 @@ updated: 2026-04-15T17:15:56.0808743Z
 
 # Using RustyCog Core
 
-Use this guide when adopting `<!-- [[projects/rustycog/references/rustycog-core]] -->` in a service.
+Use this guide when adopting `rustycog::core` through `<!-- [[projects/rustycog/references/rustycog-core]] -->` in a service.
 
 ## Workflow
 

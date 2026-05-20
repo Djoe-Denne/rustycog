@@ -4,7 +4,7 @@ category: skills
 tags: [rustycog, configuration, skills, visibility/internal]
 sources:
   - rustycog/rustycog-config/src/lib.rs
-summary: Step-by-step usage of rustycog-config for typed service config loading, env prefixes, and queue/db/runtime sections.
+summary: Step-by-step usage of rustycog::config for typed service config loading, env prefixes, and queue/db/runtime sections.
 provenance:
   extracted: 0.88
   inferred: 0.06
@@ -15,7 +15,7 @@ updated: 2026-04-15T17:15:56.0808743Z
 
 # Using RustyCog Config
 
-Use this guide when wiring typed config with `<!-- [[projects/rustycog/references/rustycog-config]] -->`.
+Use this guide when wiring typed config with `rustycog::config` through `<!-- [[projects/rustycog/references/rustycog-config]] -->`.
 
 ## Workflow
 

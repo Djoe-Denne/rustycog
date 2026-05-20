@@ -5,7 +5,7 @@ tags: [rustycog, database, skills, visibility/internal]
 sources:
   - rustycog/rustycog-db/src/lib.rs
   - rustycog/rustycog-config/src/lib.rs
-summary: Practical setup pattern for rustycog-db DbConnectionPool with write/read routing and replica fallback behavior.
+summary: Practical setup pattern for rustycog::db DbConnectionPool with write/read routing and replica fallback behavior.
 provenance:
   extracted: 0.9
   inferred: 0.04
@@ -16,7 +16,7 @@ updated: 2026-04-15T17:15:56.0808743Z
 
 # Using RustyCog DB
 
-Use this guide when integrating `<!-- [[projects/rustycog/references/rustycog-db]] -->` into service setup.
+Use this guide when integrating `rustycog::db` through `<!-- [[projects/rustycog/references/rustycog-db]] -->` into service setup.
 
 ## Workflow
 

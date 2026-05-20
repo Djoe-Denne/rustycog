@@ -77,7 +77,7 @@ Three service-specific wrappers in this repo show the conventional shape:
 ## When To Use This vs A Real Container
 
 - Pick `MockServerFixture` when the dependency is an HTTP-shaped collaborator you control entirely (Hive's external provider, Telegraph's SMTP-as-HTTP shim) and when you want assertion-grade control over request/response bodies.
-- Pick a real testcontainer (e.g. `[[projects/telegraph/references/telegraph-testing-and-smtp-fixtures]]` MailHog container in `Telegraph/tests/fixtures/smtp/testcontainer.rs`) when the test needs to verify protocol-level behavior, message persistence, or another service's parsing rules.
+- Pick a real testcontainer when the test needs to verify protocol-level behavior, message persistence, or another service's parsing rules.
 - The two coexist in Telegraph's tree: `SmtpService` (wiremock) and `TestSmtp` (MailHog testcontainer) are both present and chosen per test. ^[inferred]
 
 ## Open Questions
@@ -91,7 +91,5 @@ Three service-specific wrappers in this repo show the conventional shape:
 - [[skills/stubbing-http-with-wiremock]] — how-to recipe for adding a new wiremock-backed fixture.
 - [[projects/rustycog/references/rustycog-testing]] — parent crate reference.
 - [[projects/rustycog/references/openfga-mock-service]] — in-crate consumer for OpenFGA `Check`.
-- [[projects/hive/references/hive-testing-and-api-fixtures]] — concrete Hive consumer.
-- [[projects/telegraph/references/telegraph-testing-and-smtp-fixtures]] — concrete Telegraph consumer.
-- [[projects/manifesto/references/manifesto-testing-and-fixtures]] — Manifesto's wiring of `OpenFgaMockService` + `cache_ttl_seconds = 0`.
+- [[projects/rustycog/references/openfga-mock-service]] — in-framework consumer for OpenFGA `Check`.
 - [[concepts/integration-testing-with-real-infrastructure]] — surrounding test-strategy context.

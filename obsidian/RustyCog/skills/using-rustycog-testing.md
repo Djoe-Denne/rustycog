@@ -58,12 +58,9 @@ Use this guide when setting up integration tests with `<!-- [[projects/rustycog/
 ## Sources
 
 - [[projects/rustycog/references/rustycog-testing]]
-- [[projects/aiforall/skills/running-aiforall-runtime-modes]]
-- [[projects/aiforall/references/modular-monolith-runtime]]
 - [[projects/rustycog/references/wiremock-mock-server-fixture]]
 - [[projects/rustycog/references/openfga-mock-service]]
 - [[skills/stubbing-http-with-wiremock]]
 - [[skills/using-rustycog-permission]]
 - [[concepts/integration-testing-with-real-infrastructure]]
 - [[projects/rustycog/rustycog]]
-- [[projects/manifesto/references/manifesto-testing-and-fixtures]]

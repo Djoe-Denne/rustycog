@@ -23,7 +23,7 @@ OpenFGA has no first-class Rust SDK. Running it as a sidecar keeps the Rust surf
 
 ## Data flow
 
-1. [[projects/sentinel-sync/sentinel-sync]] consumes business events (Hive, Manifesto, IAMRusty) and issues `Write`/`Delete` tuple calls to OpenFGA. It is the only writer.
+1. An authorization-sync worker consumes business events and issues `Write`/`Delete` tuple calls to OpenFGA. It should be the only writer.
 2. Client services issue `Check` calls through [[entities/permission-checker]] before entering any domain-layer handler. They are the only readers.
 3. Failures on either side are retried with backoff; tuple writes are idempotent via a `processed_events` ledger kept by `sentinel-sync`.
 
@@ -37,4 +37,4 @@ OpenFGA has no first-class Rust SDK. Running it as a sidecar keeps the Rust surf
 
 - [[concepts/centralized-authorization-service]]
 - [[concepts/zanzibar-relation-tuples]]
-- [[projects/sentinel-sync/references/openfga-model]]
+- [[concepts/zanzibar-relation-tuples]]

@@ -11,7 +11,7 @@ sources:
   - sentinel-sync/src/translator/manifesto.rs
   - manifesto-events/src/project.rs
   - Manifesto/application/src/usecase/project.rs
-summary: How anonymous read of public projects flows through the centralized OpenFGA checker via a wildcard `user:*` subject — Phase 1 plumbs the shared crates and OpenFGA model; Phase 2 (pending) wires `sentinel-sync` to write the corresponding tuples on visibility changes.
+summary: How anonymous read of public projects flows through the centralized OpenFGA checker via a wildcard `user:*` subject — Phase 1 plumbs the shared RustyCog modules and OpenFGA model; Phase 2 (pending) wires `sentinel-sync` to write the corresponding tuples on visibility changes.
 provenance:
   extracted: 0.62
   inferred: 0.30
@@ -98,7 +98,7 @@ The cross-service plumbing needed to actually unlock anonymous public-read:
 2. **Manifesto's `update_project` use case** emits `ProjectVisibilityChanged` (in addition to the generic `ProjectUpdated`) when visibility actually flips.
 3. **`sentinel-sync` translator updates** in `sentinel-sync/src/translator/manifesto.rs`:
    - `ProjectCreated` with `evt.visibility == "public"` → write `project:{id}#viewer@user:*`.
-   - New `ProjectVisibilityChanged` arm → write or delete the wildcard tuple based on `(old, new)`. See [[projects/sentinel-sync/references/event-to-tuple-mapping]] for the row stub.
+   - New `ProjectVisibilityChanged` arm -> write or delete the wildcard tuple based on `(old, new)`.
    - `ProjectDeleted` → sweep all tuples on `project:{id}` (already noted as a TODO in the existing translator at `manifesto.rs:169-172`).
 4. **Extend `Tuple::user`** in `sentinel-sync/src/fga_client.rs` to accept either a `Uuid` or the `*` wildcard.
 5. **Revert the 3 Phase 1 test authentications** in `Manifesto/tests/project_api_tests.rs` back to anonymous and arrange `openfga.mock_check_allow_wildcard(Permission::Read, project_resource)` in `setup_test_server` (or per-test).
@@ -124,8 +124,7 @@ The user concern that prompted this plan: "when a public project becomes private
 - [[projects/rustycog/references/rustycog-permission]] — `Subject::wildcard()` and the cache bypass.
 - [[projects/rustycog/references/openfga-mock-service]] — `mock_check_*_wildcard` helpers.
 - [[projects/rustycog/references/wiremock-mock-server-fixture]] — singleton listener that the wildcard tests share.
-- [[projects/manifesto/references/manifesto-api-and-permission-flows]] — Manifesto routes that depend on this work.
-- [[projects/manifesto/references/manifesto-testing-and-fixtures]] — current test wiring + the temporary auth on the 3 GET tests.
-- [[projects/sentinel-sync/references/event-to-tuple-mapping]] — Phase 2 translator rows.
+- [[projects/rustycog/references/rustycog-http]] — optional permission middleware behavior.
+- [[projects/rustycog/references/rustycog-permission]] — checker and wildcard subject semantics.
 - [[concepts/openfga-as-authorization-engine]] — surrounding architecture.
 - [[concepts/centralized-authorization-service]] — the contract this pattern satisfies.

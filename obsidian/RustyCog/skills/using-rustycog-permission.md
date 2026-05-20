@@ -37,7 +37,7 @@ When wiring [[projects/rustycog/references/openfga-mock-service]] into a service
 - Naming `object_type` for something that does not exist in [openfga/model.fga](../../../openfga/model.fga). The check fails closed with a logged 4xx from OpenFGA.
 - Building a fresh checker per request. The composition root must build it once.
 - Assuming an empty `InMemoryPermissionChecker` allows by default — it denies everything until you call `allow`.
-- Forgetting to publish the matching domain event so [[projects/sentinel-sync/sentinel-sync]] can write the corresponding tuple. Routes will silently 403 until the tuple arrives.
+- Forgetting to publish the matching domain event or run the authorization-sync path that writes the corresponding tuple. Routes will silently 403 until the tuple arrives.
 - Leaving `cache_ttl_seconds` at its `None` default in test configs and then wondering why a `mock_check_deny` arranged after a successful `mock_check_allow` for the same tuple never fires — the cache served the stale allow. Set it to `Some(0)` for tests.
 - Mounting per-tuple deny stubs on top of a permissive `mock_check_any(true)` default without resetting first. wiremock matches in registration order; the catch-all wins. Call `openfga.reset().await` in the test before mounting the deny.
 
@@ -67,5 +67,3 @@ When wiring [[projects/rustycog/references/openfga-mock-service]] into a service
 - [[entities/permission-checker]]
 - [[concepts/openfga-as-authorization-engine]]
 - [[concepts/centralized-authorization-service]]
-- [[projects/sentinel-sync/sentinel-sync]]
-- [[projects/manifesto/references/manifesto-testing-and-fixtures]]

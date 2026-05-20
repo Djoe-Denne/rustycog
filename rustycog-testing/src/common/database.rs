@@ -332,12 +332,10 @@ impl TestFixture {
         // produce an `OpenFgaPermissionChecker` pointing at the
         // `test.toml` placeholders.
         let openfga = if descriptor.has_openfga() {
-            let model_json = descriptor
-                .openfga_authorization_model_json()
-                .expect(
-                    "ServiceTestDescriptor::has_openfga() returned true but \
+            let model_json = descriptor.openfga_authorization_model_json().expect(
+                "ServiceTestDescriptor::has_openfga() returned true but \
                      openfga_authorization_model_json() returned None",
-                );
+            );
             Some(
                 TestOpenFga::new(model_json)
                     .await

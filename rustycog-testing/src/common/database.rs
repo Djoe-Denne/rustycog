@@ -3,9 +3,9 @@
 //! This module provides a single `PostgreSQL` container for all tests with table truncation
 //! between tests to ensure test isolation while maintaining performance.
 
-use crate::common::openfga_testcontainer::TestOpenFga;
-use crate::common::sqs_testcontainer::TestSqs;
-use crate::common::ServiceTestDescriptor;
+use crate::testing::common::openfga_testcontainer::TestOpenFga;
+use crate::testing::common::sqs_testcontainer::TestSqs;
+use crate::testing::common::ServiceTestDescriptor;
 use rustycog::config::DatabaseConfig;
 use rustycog::db::DbConnectionPool;
 use sea_orm::{Database, DatabaseConnection, DbErr};

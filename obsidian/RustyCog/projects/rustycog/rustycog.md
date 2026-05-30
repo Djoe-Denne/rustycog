@@ -16,7 +16,7 @@ sources:
   - Manifesto/docs/rustycog-service-build-guide.md
   - Manifesto/docs/rustycog-implementation-and-usage-guide.md
 summary: >-
-  RustyCog now ships as one feature-gated runtime package (`rustycog-framework`, usually aliased as `rustycog`) plus a separate `rustycog-testing` package, while preserving module-level runtime building blocks.
+  RustyCog now ships as one feature-gated runtime package (`rustycog-framework`, usually aliased as `rustycog`) that also includes testing helpers behind the `testing` feature.
 provenance:
   extracted: 0.79
   inferred: 0.09
@@ -35,7 +35,7 @@ RustyCog is the shared Rust framework used to compose service runtime concerns a
 
 ## Canonical Scope
 
-RustyCog now exposes one runtime package (`rustycog-framework`) with feature-gated module surfaces. Consumers usually alias it as `rustycog` in `Cargo.toml`, so code imports keep the concise `rustycog::...` form. Testing helpers remain in one separate package, `rustycog-testing`.
+RustyCog now exposes one runtime package (`rustycog-framework`) with feature-gated module surfaces. Consumers usually alias it as `rustycog` in `Cargo.toml`, so code imports keep the concise `rustycog::...` form. Testing helpers live in the same package under `rustycog::testing` when the `testing` feature is enabled.
 
 - [[projects/rustycog/references/rustycog-core]] — `rustycog::core` (`core` feature), shared error contracts (`ServiceError`, `DomainError`)
 - [[projects/rustycog/references/rustycog-command]] — `rustycog::command` (`command` feature), command execution runtime and registry
@@ -47,13 +47,13 @@ RustyCog now exposes one runtime package (`rustycog-framework`) with feature-gat
 - [[projects/rustycog/references/rustycog-permission]] — `rustycog::permission` (`permission` feature), `PermissionChecker` and OpenFGA adapters
 - [[projects/rustycog/references/rustycog-server]] — `rustycog::server` (`server` feature), health-check abstractions
 - [[projects/rustycog/references/rustycog-logger]] — `rustycog::logger` (`logger` feature), tracing/logging initialization helpers
-- [[projects/rustycog/references/rustycog-testing]] — separate `rustycog-testing` crate for integration fixtures and bootstrap helpers
+- [[projects/rustycog/references/rustycog-testing]] — `rustycog::testing` (`testing` feature), integration fixtures and bootstrap helpers
 - [[projects/rustycog/references/rustycog-meta]] — legacy packaging note retained for migration history
 
 ## Packaging Decision
 
 - Runtime/service crates should depend on `rustycog = { package = "rustycog-framework", ... }` and select explicit features (`core`, `config`, `http`, `events`, etc., or `full` when needed).
-- Integration tests should continue to use `rustycog-testing`, which depends on `rustycog` with `full` and `test-utils`.
+- Integration tests should enable the `testing` feature on `rustycog-framework` and import helpers through `rustycog::testing`.
 - Historical `rustycog-*` per-crate dependencies are deprecated in this repository.
 
 ## Recent Runtime Decisions

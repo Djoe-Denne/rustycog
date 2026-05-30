@@ -20,7 +20,7 @@ sources:
   - Manifesto/docs/rustycog-service-build-guide.md
   - Manifesto/docs/rustycog-implementation-and-usage-guide.md
 summary: >-
-  RustyCog is the shared SDK stack for platform services, centered on one feature-gated runtime package (`rustycog-framework`, usually aliased as `rustycog`) plus one dedicated testing package (`rustycog-testing`).
+  RustyCog is the shared SDK stack for platform services, centered on one feature-gated runtime package (`rustycog-framework`, usually aliased as `rustycog`) with integrated testing helpers behind the `testing` feature.
 provenance:
   extracted: 0.78
   inferred: 0.08
@@ -39,7 +39,7 @@ updated: 2026-05-20T14:07:00Z
 - RustyCog standardizes composition seams, not business logic: services still own domain models, handlers, route sets, and policy choices. Authorization itself is centralized in OpenFGA via [[concepts/centralized-authorization-service]] — services only call `Check`.
 - Shared entities (`ServiceError`, `CommandRegistry`, `QueueConfig`, `RouteBuilder`, `PermissionChecker`, `DomainEvent`, and others) are documented in `[[entities/index]]` as a common vocabulary for service docs.
 - Cross-service consistency comes from repeating the same integration boundaries (config -> command -> HTTP -> permissions/events/testing), not from one monolithic starter template.
-- Consumption is now explicit: runtime crates depend on `rustycog = { package = "rustycog-framework", ... }` with selected features, and integration suites depend on `rustycog-testing`.
+- Consumption is now explicit: runtime crates depend on `rustycog = { package = "rustycog-framework", ... }` with selected features, and integration suites add the `testing` feature when they need fixtures.
 
 ## Open Questions
 

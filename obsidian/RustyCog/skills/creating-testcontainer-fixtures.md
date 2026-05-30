@@ -43,7 +43,7 @@ The heuristic: if production has a `[[projects/rustycog/rustycog]]` shared clien
 
 ## Step 1: Extend the descriptor (shared fixtures only)
 
-`ServiceTestDescriptor<T>` in `rustycog-testing` is the central capability contract; the trait is **not** defaulted, so adding a flag is a breaking change every implementor must absorb:
+`ServiceTestDescriptor<T>` in `rustycog::testing` is the central capability contract; the trait is **not** defaulted, so adding a flag is a breaking change every implementor must absorb:
 
 ```rust
 pub trait ServiceTestDescriptor<T>: Send + Sync + 'static {

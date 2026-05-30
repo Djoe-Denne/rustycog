@@ -17,13 +17,13 @@ updated: 2026-05-20T14:00:00Z
 
 # RustyCog Meta (Legacy)
 
-`rustycog-meta` is kept as a legacy note for historical links. The active packaging model is now a unified `rustycog-framework` package with features, typically aliased as `rustycog` by consumers, plus a separate `rustycog-testing` package.
+`rustycog-meta` is kept as a legacy note for historical links. The active packaging model is now a unified `rustycog-framework` package with features, typically aliased as `rustycog` by consumers, including testing helpers behind the `testing` feature.
 
 ## Current Status
 
 - `rustycog-meta` is not the recommended dependency target in this repository anymore.
 - Runtime crates should consume `rustycog = { package = "rustycog-framework", ... }` and select only needed features (`core`, `config`, `http`, `events`, etc., or `full`).
-- Integration tests should depend on `rustycog-testing`, which itself depends on `rustycog` (`full` + `test-utils`).
+- Integration tests should enable `rustycog-framework`'s `testing` feature and import helpers through `rustycog::testing`.
 - Historical `rustycog-*` per-crate dependency guidance is deprecated.
 
 ## Migration Guidance
@@ -36,10 +36,7 @@ updated: 2026-05-20T14:00:00Z
 
 ```toml
 [dependencies]
-rustycog = { package = "rustycog-framework", path = "../rustycog", features = ["full"] }
-
-[dev-dependencies]
-rustycog-testing = { path = "../rustycog/rustycog-testing" }
+rustycog = { package = "rustycog-framework", path = "../rustycog", features = ["full", "testing"] }
 ```
 
 ## Linked Entities

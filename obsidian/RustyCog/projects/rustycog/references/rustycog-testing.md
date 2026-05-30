@@ -11,11 +11,8 @@ sources:
   - rustycog/rustycog-testing/src/common/openfga_testcontainer.rs
   - rustycog/rustycog-testing/src/wiremock/mod.rs
   - rustycog/rustycog-testing/src/permission/mod.rs
-  - Hive/tests/sqs_event_routing_tests.rs
-  - IAMRusty/tests/sqs_event_routing_tests.rs
-  - Manifesto/tests/sqs_event_routing_tests.rs
 summary: >-
-  rustycog-testing bundles service descriptors plus real DB, Kafka, SQS fanout, OpenFGA, and wiremock fixtures for integration tests.
+  rustycog::testing bundles service descriptors plus real DB, Kafka, SQS fanout, OpenFGA, and wiremock fixtures for integration tests.
 provenance:
   extracted: 0.89
   inferred: 0.09
@@ -26,11 +23,11 @@ updated: 2026-05-20T14:03:00Z
 
 # RustyCog Testing
 
-`rustycog-testing` is the shared integration-test toolbox for services built on `[[projects/rustycog/rustycog]]`, and remains intentionally separate from the unified runtime package.
+`rustycog::testing` is the shared integration-test toolbox for services built on `[[projects/rustycog/rustycog]]`. It is packaged inside `rustycog-framework` and enabled with the `testing` feature.
 
 ## Key Ideas
 
-- The crate re-exports common test modules (DB, events, HTTP, wiremock) through one dependency.
+- The module re-exports common test modules (DB, events, HTTP, wiremock) through the main framework dependency.
 - `ServiceTestDescriptor<T>` is the central service contract: it defines app build/run hooks, migration hooks, and capability flags (`has_db()`, `has_sqs()`, `has_openfga()`).
 - Fixture builders branch off descriptor flags to provision only the infrastructure a service needs, keeping shared helpers portable across services.
 - `get_test_server()` and `setup_test_server()` manage a reusable global test server lifecycle using `OnceLock` and async mutex guards.
@@ -42,7 +39,7 @@ updated: 2026-05-20T14:03:00Z
 - Producer-routing test suites keep service test configs `enabled = false` by default, then opt in with a dedicated descriptor returning `has_sqs() == true` and a per-service env override (`*_QUEUE__ENABLED=true`) so normal HTTP/API suites do not start LocalStack.
 - Producer-side SQS routing tests should assert both placement and non-placement: Hive and Manifesto routing tests wait on `test-sentinel-sync-events` by name, IAMRusty's routing tests wait on `test-telegraph-events`, and each verifies its service-specific default queue stays empty for explicitly mapped events.
 - [[projects/rustycog/references/openfga-real-testcontainer-fixture]] runs `openfga/openfga`, creates a fresh store/model per test setup, and exposes `allow`/`deny` tuple helpers so permission-gated route tests exercise production OpenFGA semantics instead of stubbed HTTP responses.
-- The package keeps service tests close to production wiring while still minimizing repeated bootstrapping code.
+- The testing feature keeps service tests close to production wiring while still minimizing repeated bootstrapping code.
 
 ## Linked Entities
 

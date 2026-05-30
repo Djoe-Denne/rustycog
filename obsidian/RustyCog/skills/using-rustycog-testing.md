@@ -15,7 +15,7 @@ sources:
   - Hive/tests/sqs_event_routing_tests.rs
   - Manifesto/tests/common.rs
   - Manifesto/tests/sqs_event_routing_tests.rs
-summary: Workflow for using rustycog-testing to bootstrap service tests, prefixed URLs, SQS fanout fixtures, real infrastructure, and wiremock fakes.
+summary: Workflow for using rustycog::testing to bootstrap service tests, prefixed URLs, SQS fanout fixtures, real infrastructure, and wiremock fakes.
 provenance:
   extracted: 0.88
   inferred: 0.08
@@ -26,7 +26,7 @@ updated: 2026-04-25T11:25:00Z
 
 # Using RustyCog Testing
 
-Use this guide when setting up integration tests with `<!-- [[projects/rustycog/references/rustycog-testing]] -->`.
+Use this guide when setting up integration tests with `rustycog::testing` from `<!-- [[projects/rustycog/references/rustycog-testing]] -->`.
 
 ## Workflow
 
@@ -46,7 +46,7 @@ Use this guide when setting up integration tests with `<!-- [[projects/rustycog/
 ## Common Pitfalls
 
 - Recreating server/process setup in each test instead of reusing descriptor-based helpers.
-- Using the raw origin returned by `rustycog_testing::setup_test_server()` directly in service tests. Wrap it once in the service-local helper with the same `SERVICE_PREFIX` used by runtime routing, otherwise tests will pass against paths that do not match microservice or monolith mode.
+- Using the raw origin returned by `rustycog::testing::setup_test_server()` directly in service tests. Wrap it once in the service-local helper with the same `SERVICE_PREFIX` used by runtime routing, otherwise tests will pass against paths that do not match microservice or monolith mode.
 - Hard-coding `/api/...` against a bare origin in new test helpers. Keep the prefix centralized in `tests/common.rs` so moving between standalone and monolith runtime modes does not change individual tests.
 - Leaving queue tests enabled by default when suites do not need transport behavior.
 - Checking only the fallback queue in fanout or routing tests. Use named-queue reads when one event should land in multiple destination queues, and assert the fallback queue is empty when a per-event mapping should bypass it.

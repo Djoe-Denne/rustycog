@@ -6,7 +6,7 @@ pub mod permission;
 pub mod wiremock;
 
 // Re-export commonly used items
-pub use common::*;
-pub use db::*;
-pub use http::*;
-pub use wiremock::*;
+pub use self::common::*;
+pub use self::db::*;
+pub use self::http::*;
+pub use self::wiremock::*;

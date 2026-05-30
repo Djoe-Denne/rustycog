@@ -6,7 +6,7 @@ A feature-gated SDK for building microservices in Rust, extracted from productio
 
 RustyCog provides one runtime package, `rustycog-framework`, that handles common microservice concerns through feature-gated modules. Consumers typically alias the package as `rustycog` in `Cargo.toml`, then import modules such as `rustycog::core`, `rustycog::config`, `rustycog::http`, and `rustycog::events`.
 
-The historical `rustycog-*` crate names now describe module/reference boundaries inside the unified runtime package. Integration-test helpers remain separate in the `rustycog-testing` package.
+The historical `rustycog-*` crate names now describe module/reference boundaries inside the unified runtime package. Integration-test helpers are included in the same package behind the `testing` feature and exposed as `rustycog::testing`.
 
 ## Features
 
@@ -57,7 +57,9 @@ rustycog = { package = "rustycog-framework", version = "0.1", default-features =
 ] }
 
 [dev-dependencies]
-rustycog-testing = "0.1"
+rustycog = { package = "rustycog-framework", version = "0.1", default-features = false, features = [
+    "testing",
+] }
 ```
 
 For broad application crates, use `features = ["full"]`. For libraries, prefer the smallest feature set that exposes the modules you actually use.
@@ -218,8 +220,8 @@ Tracing and logging initialization helpers.
 ### `rustycog::server` (`server`)
 Health-check abstractions.
 
-### `rustycog-testing`
-Separate testing package with testcontainers, HTTP helpers, wiremock fixtures, and real infrastructure bootstrap utilities.
+### `rustycog::testing` (`testing`)
+Testing module with testcontainers, HTTP helpers, wiremock fixtures, and real infrastructure bootstrap utilities.
 
 ## Error Handling Philosophy
 
@@ -322,7 +324,7 @@ async fn test_create_user() {
 
 Reference implementations currently live in this repository's service consumers
 (`IAMRusty`, `Hive`, `Manifesto`, `Telegraph`) and in the integration tests
-that exercise the unified `rustycog-framework` package plus `rustycog-testing`.
+that exercise the unified `rustycog-framework` package, including its `testing` feature.
 
 ## Migration from Existing Code
 

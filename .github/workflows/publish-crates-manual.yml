@@ -16,50 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Validate workspace build
-        run: cargo check --workspace --all-targets --locked
-
-      - name: Package crate
-        run: cargo package -p rustycog-framework --locked
-
-      - name: Publish crate
-        shell: bash
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          log_file="$(mktemp)"
-
-          set +e
-          cargo publish -p rustycog-framework --locked 2>&1 | tee "${log_file}"
-          status=${PIPESTATUS[0]}
-          set -e
-
-          if [ "$status" -eq 0 ]; then
-            rm -f "${log_file}"
-            exit 0
-          fi
-
-          if rg -q "already uploaded|already exists" "${log_file}"; then
-            echo "rustycog-framework is already published at this version. Continuing."
-            rm -f "${log_file}"
-            exit 0
-          fi
-
-          rm -f "${log_file}"
-          exit "$status"
-
-  publish-testing:
-    name: Package and publish rustycog-testing
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
       - name: Install native dependencies
         run: |
           sudo apt-get update
@@ -77,20 +33,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: publish-testing
-          cache-on-failure: true
 
-      - name: Validate framework build
+      - name: Validate workspace build
         run: cargo check -p rustycog-framework --all-targets --all-features --locked
 
-      - name: Validate testing crate build
-        run: cargo check --manifest-path rustycog-testing/Cargo.toml --all-targets --locked
+      - name: Package crate
+        run: cargo package -p rustycog-framework --locked --features testing
 
-      - name: Package testing crate
-        run: cargo package --manifest-path rustycog-testing/Cargo.toml --locked
-
-      - name: Publish testing crate
+      - name: Publish crate
         shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
@@ -100,7 +50,7 @@ jobs:
           log_file="$(mktemp)"
 
           set +e
-          cargo publish --manifest-path rustycog-testing/Cargo.toml --locked 2>&1 | tee "${log_file}"
+          cargo publish -p rustycog-framework --locked --features testing 2>&1 | tee "${log_file}"
           status=${PIPESTATUS[0]}
           set -e
 
@@ -110,7 +60,7 @@ jobs:
           fi
 
           if rg -q "already uploaded|already exists" "${log_file}"; then
-            echo "rustycog-testing is already published at this version. Continuing."
+            echo "rustycog-framework is already published at this version. Continuing."
             rm -f "${log_file}"
             exit 0
           fi

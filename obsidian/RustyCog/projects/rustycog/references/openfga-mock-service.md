@@ -26,9 +26,9 @@ updated: 2026-05-20T14:06:00Z
 > [!warning] Historical
 > This page documents the removed wiremock-backed `OpenFgaMockService`. Hive, Manifesto, and Telegraph integration tests now use [[projects/rustycog/references/openfga-real-testcontainer-fixture]], which exercises real OpenFGA store/model/tuple semantics and denies by default.
 
-`rustycog_testing::permission::OpenFgaMockService` is the wiremock-backed fake of OpenFGA's `POST /stores/{store_id}/check` endpoint. It wraps the shared `[[projects/rustycog/references/wiremock-mock-server-fixture]]` and lets integration tests answer permission-checker `Check` calls per-tuple instead of standing up a real OpenFGA store and a `sentinel-sync` worker.
+`rustycog::testing::permission::OpenFgaMockService` was the wiremock-backed fake of OpenFGA's `POST /stores/{store_id}/check` endpoint. It wrapped the shared `[[projects/rustycog/references/wiremock-mock-server-fixture]]` and let integration tests answer permission-checker `Check` calls per-tuple instead of standing up a real OpenFGA store and a tuple-sync worker.
 
-It is the third concrete consumer of the shared singleton wiremock server (alongside Hive's `ExternalProviderMockService` and Telegraph's `SmtpService`) but it is special because it lives **inside** `rustycog-testing` itself, not in a service's `tests/fixtures/` tree — every service that wires `[[projects/rustycog/references/rustycog-permission]]` can reuse it directly.
+It lived inside RustyCog's testing module rather than a service's `tests/fixtures/` tree, so every service that wired `[[projects/rustycog/references/rustycog-permission]]` could reuse it directly.
 
 ## Module Anatomy
 

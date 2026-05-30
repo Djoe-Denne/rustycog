@@ -8,7 +8,7 @@ sources:
   - Hive/tests/fixtures/external_provider/mod.rs
   - Telegraph/tests/fixtures/smtp/service.rs
   - Telegraph/tests/fixtures/smtp/mod.rs
-summary: Recipe for stubbing outbound HTTP in service integration tests by wrapping rustycog-testing's shared MockServerFixture with a per-collaborator helper struct, including the per-test reset pattern needed when overriding stubs mounted by setup_test_server.
+summary: Recipe for stubbing outbound HTTP in service integration tests by wrapping rustycog::testing's shared MockServerFixture with a per-collaborator helper struct, including the per-test reset pattern needed when overriding stubs mounted by setup_test_server.
 provenance:
   extracted: 0.7
   inferred: 0.24
@@ -108,7 +108,7 @@ If the test is verifying protocol-level behavior of the real collaborator (SMTP 
 - [[projects/rustycog/references/wiremock-mock-server-fixture]] — fixture API surface and isolation semantics.
 - [[projects/rustycog/references/openfga-mock-service]] — in-crate consumer with the canonical reset-and-deny pattern, plus the `cache_ttl_seconds = 0` companion setting.
 - [[skills/creating-testcontainer-fixtures]] — sister skill for the real-protocol testcontainer alternative.
-- [[projects/rustycog/references/rustycog-testing]] — parent crate where the fixture lives.
+- [[projects/rustycog/references/rustycog-testing]] — `rustycog::testing` module where the fixture lives.
 - [[projects/rustycog/references/wiremock-mock-server-fixture]] — shared fixture behavior.
 - [[projects/rustycog/references/openfga-mock-service]] — in-framework OpenFGA wrapper around the shared fixture.
 - [[concepts/integration-testing-with-real-infrastructure]] — when to mock vs. when to run a real container.

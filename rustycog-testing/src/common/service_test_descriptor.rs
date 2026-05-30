@@ -40,7 +40,7 @@ pub trait ServiceTestDescriptor<T>: Send + Sync + 'static {
     /// Whether this service exercises the centralized
     /// [`rustycog::permission::OpenFgaPermissionChecker`] in tests.
     ///
-    /// When `true`, [`crate::common::TestFixture::new`] starts the singleton
+    /// When `true`, [`crate::testing::common::TestFixture::new`] starts the singleton
     /// `openfga/openfga` testcontainer, creates a fresh store, uploads the
     /// model returned by [`Self::openfga_authorization_model_json`], and
     /// publishes the resolved API URL plus store / model ids into

@@ -1,7 +1,7 @@
 //! Real-OpenFGA permission fixtures.
 //!
 //! The wiremock-backed `OpenFgaMockService` was retired in favor of the
-//! testcontainer-backed [`crate::common::openfga_testcontainer::TestOpenFga`],
+//! testcontainer-backed [`crate::testing::common::openfga_testcontainer::TestOpenFga`],
 //! which boots a real `openfga/openfga` container and drives the
 //! production `OpenFgaPermissionChecker` against the actual Check API.
 //!
@@ -14,6 +14,6 @@
 //! (`TestOpenFga::allow` / `deny` / `read_tuples`); see
 //! `Manifesto/tests/component_api_tests.rs` for the canonical pattern.
 
-pub use crate::common::openfga_testcontainer::{
+pub use crate::testing::common::openfga_testcontainer::{
     writable_relation_for, TestOpenFga, TestOpenFgaContainer, TupleKey,
 };

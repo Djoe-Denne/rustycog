@@ -14,7 +14,7 @@ sources:
   - Cargo.toml
   - rustycog/Cargo.toml
 summary: >-
-  Workflow for scaffolding RustyCog services on the unified `rustycog-framework` package (usually aliased as `rustycog`, with feature-gated modules), plus `rustycog-testing` for integration tests.
+  Workflow for scaffolding RustyCog services on the unified `rustycog-framework` package (usually aliased as `rustycog`, with feature-gated modules), including the `testing` feature for integration tests.
 provenance:
   extracted: 0.82
   inferred: 0.08
@@ -30,7 +30,7 @@ Use this page when starting a new service that builds on `[[projects/rustycog/ru
 ## Workflow
 
 - Start with one vertical slice across `domain`, `application`, `infra`, `http`, `setup`, `configuration`, and `tests` rather than scaffolding everything at once.
-- Depend on `rustycog = { package = "rustycog-framework", ... }` and enable only the features you need (`core`, `config`, `http`, `events`, etc., or `full` for broad usage). Keep `rustycog-testing` in dev/test dependencies.
+- Depend on `rustycog = { package = "rustycog-framework", ... }` and enable only the features you need (`core`, `config`, `http`, `events`, etc., or `full` for broad usage). Enable `testing` in test-only dependency declarations when you need fixtures.
 - Define typed config first using the `<!-- [[concepts/structured-service-configuration]] -->` pattern, then decide explicitly whether your service will use `setup_logging` or a hand-rolled tracing initialization.
 - Create one `DbConnectionPool`, split read and write repositories correctly, and wire concrete dependencies inside the setup composition root.
 - Register commands through the `<!-- [[concepts/command-registry-and-retry-policies]] -->` approach, then wrap the registry in `GenericCommandService` so handlers stay behind one execution surface.

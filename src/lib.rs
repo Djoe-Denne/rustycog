@@ -3,6 +3,8 @@
 //! This crate consolidates the historical `rustycog-*` crates under a single
 //! package while preserving module boundaries via Cargo features.
 
+extern crate self as rustycog;
+
 #[cfg(feature = "core")]
 #[path = "../rustycog-core/src/lib.rs"]
 pub mod core;
@@ -42,6 +44,10 @@ pub mod permission;
 #[cfg(feature = "server")]
 #[path = "../rustycog-server/src/lib.rs"]
 pub mod server;
+
+#[cfg(feature = "testing")]
+#[path = "../rustycog-testing/src/lib.rs"]
+pub mod testing;
 
 // Internal compatibility namespaces so existing module source can keep
 // referencing historical crate paths while compiled as one package.

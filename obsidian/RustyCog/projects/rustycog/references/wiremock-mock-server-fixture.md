@@ -10,7 +10,7 @@ sources:
   - Hive/tests/fixtures/external_provider/resources.rs
   - Telegraph/tests/fixtures/smtp/service.rs
   - Telegraph/tests/fixtures/smtp/mod.rs
-summary: How rustycog-testing's wiremock module exposes a single shared MockServer on port 3000 with auto-reset isolation, and the per-service helpers (Hive ExternalProvider, Telegraph SmtpService, in-crate OpenFgaMockService) that wrap it.
+summary: How rustycog::testing's wiremock module exposes a single shared MockServer on port 3000 with auto-reset isolation, and helper fixtures that wrap it.
 provenance:
   extracted: 0.78
   inferred: 0.16
@@ -21,7 +21,7 @@ updated: 2026-05-20T14:05:00Z
 
 # Wiremock MockServerFixture
 
-`rustycog-testing` exposes a single shared `wiremock::MockServer` through the `MockServerFixture` type so that any service test can stub outbound HTTP without each suite spinning up its own listener. The module lives at `rustycog/rustycog-testing/src/wiremock/mod.rs` and is re-exported from the crate as `rustycog_testing::wiremock`.
+`rustycog::testing` exposes a single shared `wiremock::MockServer` through the `MockServerFixture` type so that any service test can stub outbound HTTP without each suite spinning up its own listener. The module lives at `rustycog/rustycog-testing/src/wiremock/mod.rs` and is re-exported from the framework as `rustycog::testing::wiremock`.
 
 ## Module Anatomy
 
@@ -58,7 +58,7 @@ Three service-specific wrappers in this repo show the conventional shape:
 
 - **Hive** — `ExternalProviderMockService` (`Hive/tests/fixtures/external_provider/service.rs`) holds an `Arc<MockServer>` plus the `MockServerFixture` (kept in a `_fixture` field purely for drop-time cleanup) and exposes one async `mock_*` method per emulated provider endpoint: `mock_validate_config_ok`, `mock_validate_config_fail(message_contains)`, `mock_connection_test(connected)`, `mock_organization_info(name, external_id)`, `mock_members(members)`, `mock_is_member(is_member)`. Each method returns `&Self` so calls can be chained when arranging a scenario.
 - **Telegraph** — `SmtpService` (`Telegraph/tests/fixtures/smtp/service.rs`) follows the same `_fixture` ownership pattern but goes further: in addition to one `mock_*` method per SMTP verb (`mock_greeting`, `mock_ehlo`, `mock_auth`, `mock_mail_from`, `mock_rcpt_to`, `mock_data`, `mock_quit`), it composes high-level scenarios (`mock_successful_email_send`, `mock_authenticated_email_send`, `mock_auth_failure`, `mock_recipient_rejection`) and exposes a `SmtpScenarioBuilder` for ad-hoc multi-step flows. It also adds inspection helpers (`received_requests`, `verify_email_sent`, `email_count`) on top of `MockServer::received_requests`.
-- **OpenFGA (in-crate)** — `OpenFgaMockService` (`rustycog/rustycog-testing/src/permission/service.rs`) lives **inside** `rustycog-testing` itself rather than a service's `tests/fixtures/`, so every consumer of `[[projects/rustycog/references/rustycog-permission]]` can reuse it. Same `_fixture` ownership pattern; exposes per-tuple `mock_check_allow` / `mock_check_deny`, a catch-all `mock_check_any(allow: bool)`, error/auth variants, and an explicit `reset()` for tests that need to override stubs mounted earlier in the same test or by `setup_test_server`. See [[projects/rustycog/references/openfga-mock-service]] for the full surface.
+- **OpenFGA (in-framework)** — the OpenFGA fixtures live inside `rustycog::testing` rather than a service's `tests/fixtures/`, so every consumer of `[[projects/rustycog/references/rustycog-permission]]` can reuse them. See [[projects/rustycog/references/openfga-real-testcontainer-fixture]] for the real-container surface.
 
 ## Request Matching Conventions
 
@@ -89,7 +89,7 @@ Three service-specific wrappers in this repo show the conventional shape:
 ## See Also
 
 - [[skills/stubbing-http-with-wiremock]] — how-to recipe for adding a new wiremock-backed fixture.
-- [[projects/rustycog/references/rustycog-testing]] — parent crate reference.
+- [[projects/rustycog/references/rustycog-testing]] — testing module reference.
 - [[projects/rustycog/references/openfga-mock-service]] — in-crate consumer for OpenFGA `Check`.
 - [[projects/rustycog/references/openfga-mock-service]] — in-framework consumer for OpenFGA `Check`.
 - [[concepts/integration-testing-with-real-infrastructure]] — surrounding test-strategy context.

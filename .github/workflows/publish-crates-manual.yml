@@ -33,48 +33,30 @@ jobs:
         run: |
           set -euo pipefail
 
-          max_attempts=8
-          sleep_seconds=20
-          attempt=1
+          log_file="$(mktemp)"
 
-          while [ "$attempt" -le "$max_attempts" ]; do
-            echo "Publishing rustycog-framework (attempt ${attempt}/${max_attempts})"
-            log_file="$(mktemp)"
+          set +e
+          cargo publish -p rustycog-framework --locked 2>&1 | tee "${log_file}"
+          status=${PIPESTATUS[0]}
+          set -e
 
-            set +e
-            cargo publish -p rustycog-framework --locked 2>&1 | tee "${log_file}"
-            status=${PIPESTATUS[0]}
-            set -e
-
-            if [ "$status" -eq 0 ]; then
-              rm -f "${log_file}"
-              exit 0
-            fi
-
-            if rg -q "already uploaded|already exists" "${log_file}"; then
-              echo "rustycog-framework is already published at this version. Continuing."
-              rm -f "${log_file}"
-              exit 0
-            fi
-
+          if [ "$status" -eq 0 ]; then
             rm -f "${log_file}"
+            exit 0
+          fi
 
-            if [ "$attempt" -lt "$max_attempts" ]; then
-              echo "Publish failed. Retrying in ${sleep_seconds}s..."
-              sleep "${sleep_seconds}"
-            fi
+          if rg -q "already uploaded|already exists" "${log_file}"; then
+            echo "rustycog-framework is already published at this version. Continuing."
+            rm -f "${log_file}"
+            exit 0
+          fi
 
-            attempt=$((attempt + 1))
-            sleep_seconds=$((sleep_seconds + 10))
-          done
-
-          echo "Failed to publish rustycog-framework after ${max_attempts} attempts."
-          exit 1
+          rm -f "${log_file}"
+          exit "$status"
 
   publish-testing:
     name: Package and publish rustycog-testing
     runs-on: ubuntu-latest
-    needs: [publish-framework]
     steps:
       - uses: actions/checkout@v4
 
@@ -115,40 +97,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          max_attempts=8
-          sleep_seconds=20
-          attempt=1
+          log_file="$(mktemp)"
 
-          while [ "$attempt" -le "$max_attempts" ]; do
-            echo "Publishing rustycog-testing (attempt ${attempt}/${max_attempts})"
-            log_file="$(mktemp)"
+          set +e
+          cargo publish --manifest-path rustycog-testing/Cargo.toml --locked 2>&1 | tee "${log_file}"
+          status=${PIPESTATUS[0]}
+          set -e
 
-            set +e
-            cargo publish --manifest-path rustycog-testing/Cargo.toml --locked 2>&1 | tee "${log_file}"
-            status=${PIPESTATUS[0]}
-            set -e
-
-            if [ "$status" -eq 0 ]; then
-              rm -f "${log_file}"
-              exit 0
-            fi
-
-            if rg -q "already uploaded|already exists" "${log_file}"; then
-              echo "rustycog-testing is already published at this version. Continuing."
-              rm -f "${log_file}"
-              exit 0
-            fi
-
+          if [ "$status" -eq 0 ]; then
             rm -f "${log_file}"
+            exit 0
+          fi
 
-            if [ "$attempt" -lt "$max_attempts" ]; then
-              echo "Publish failed. Retrying in ${sleep_seconds}s..."
-              sleep "${sleep_seconds}"
-            fi
+          if rg -q "already uploaded|already exists" "${log_file}"; then
+            echo "rustycog-testing is already published at this version. Continuing."
+            rm -f "${log_file}"
+            exit 0
+          fi
 
-            attempt=$((attempt + 1))
-            sleep_seconds=$((sleep_seconds + 10))
-          done
-
-          echo "Failed to publish rustycog-testing after ${max_attempts} attempts."
-          exit 1
+          rm -f "${log_file}"
+          exit "$status"

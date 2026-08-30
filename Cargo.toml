@@ -85,7 +85,6 @@ events = [
     "dep:aws-sdk-sqs",
     "dep:chrono",
     "dep:futures",
-    "dep:rdkafka",
     "dep:rustls",
     "dep:serde",
     "dep:serde_json",
@@ -93,6 +92,8 @@ events = [
     "dep:tracing",
     "dep:uuid",
 ]
+# librdkafka / rdkafka-sys needs Unix configure+cp; keep off of `full` on Windows.
+kafka = ["events", "dep:rdkafka"]
 http = [
     "core",
     "command",

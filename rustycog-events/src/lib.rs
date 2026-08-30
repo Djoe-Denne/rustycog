@@ -16,6 +16,7 @@ fn init_crypto_provider() {
 
 pub mod adapter;
 pub mod event;
+#[cfg(feature = "kafka")]
 pub mod kafka;
 pub mod no_op;
 pub mod sqs;
@@ -28,13 +29,18 @@ use std::sync::Arc;
 
 pub use adapter::*;
 pub use event::*;
+#[cfg(feature = "kafka")]
 pub use kafka::{KafkaEventConsumer, KafkaEventPublisher};
 pub use no_op::*;
 pub use sqs::{SqsEventConsumer, SqsEventPublisher};
 
 /// Concrete event publisher that can be Kafka, SQS, or `NoOp`
 pub enum ConcreteEventPublisher {
+    #[cfg(feature = "kafka")]
     Kafka(KafkaEventPublisher),
+    /// Placeholder so downstream matches compile when `kafka` is off.
+    #[cfg(not(feature = "kafka"))]
+    Kafka(()),
     Sqs(SqsEventPublisher),
     NoOp(Arc<dyn EventPublisher<ServiceError>>),
 }
@@ -42,9 +48,22 @@ pub enum ConcreteEventPublisher {
 impl ConcreteEventPublisher {
     pub async fn new(config: &QueueConfig) -> Result<Self, ServiceError> {
         match config {
-            QueueConfig::Kafka(kafka_config) => Ok(Self::Kafka(
-                KafkaEventPublisher::new(kafka_config.clone()).await?,
-            )),
+            QueueConfig::Kafka(kafka_config) => {
+                #[cfg(feature = "kafka")]
+                {
+                    Ok(Self::Kafka(
+                        KafkaEventPublisher::new(kafka_config.clone()).await?,
+                    ))
+                }
+                #[cfg(not(feature = "kafka"))]
+                {
+                    let _ = kafka_config;
+                    tracing::warn!(
+                        "Kafka requested but rustycog `kafka` feature is disabled; using no-op publisher"
+                    );
+                    Ok(Self::NoOp(Arc::new(NoOpEventPublisher::new())))
+                }
+            }
             QueueConfig::Sqs(sqs_config) => {
                 Ok(Self::Sqs(SqsEventPublisher::new(sqs_config.clone()).await?))
             }
@@ -57,7 +76,10 @@ impl ConcreteEventPublisher {
 impl EventPublisher<ServiceError> for ConcreteEventPublisher {
     async fn publish(&self, event: &dyn DomainEvent) -> Result<(), ServiceError> {
         match self {
+            #[cfg(feature = "kafka")]
             Self::Kafka(kafka) => kafka.publish(event).await,
+            #[cfg(not(feature = "kafka"))]
+            Self::Kafka(()) => Ok(()),
             Self::Sqs(sqs) => sqs.publish(event).await,
             Self::NoOp(no_op) => no_op.publish(event).await,
         }
@@ -65,7 +87,10 @@ impl EventPublisher<ServiceError> for ConcreteEventPublisher {
 
     async fn publish_batch(&self, events: &[Box<dyn DomainEvent>]) -> Result<(), ServiceError> {
         match self {
+            #[cfg(feature = "kafka")]
             Self::Kafka(kafka) => kafka.publish_batch(events).await,
+            #[cfg(not(feature = "kafka"))]
+            Self::Kafka(()) => Ok(()),
             Self::Sqs(sqs) => sqs.publish_batch(events).await,
             Self::NoOp(no_op) => no_op.publish_batch(events).await,
         }
@@ -73,7 +98,10 @@ impl EventPublisher<ServiceError> for ConcreteEventPublisher {
 
     async fn health_check(&self) -> Result<(), ServiceError> {
         match self {
+            #[cfg(feature = "kafka")]
             Self::Kafka(kafka) => kafka.health_check().await,
+            #[cfg(not(feature = "kafka"))]
+            Self::Kafka(()) => Ok(()),
             Self::Sqs(sqs) => sqs.health_check().await,
             Self::NoOp(no_op) => no_op.health_check().await,
         }
@@ -81,7 +109,7 @@ impl EventPublisher<ServiceError> for ConcreteEventPublisher {
 }
 
 /// Check if a Kafka test container is currently running
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(all(feature = "kafka", any(test, feature = "test-utils")))]
 fn is_test_kafka_container_running() -> bool {
     // The kafka_testcontainer.rs sets these environment variables when a container is started
     // We check for these specific test environment variables to detect if a test container is active
@@ -122,73 +150,83 @@ pub async fn create_event_publisher(
 pub async fn create_kafka_event_publisher(
     config: &KafkaConfig,
 ) -> Result<Arc<ConcreteEventPublisher>, ServiceError> {
-    // In test mode, only use Kafka if explicitly enabled AND a test container is running
-    if is_test_mode() {
-        #[cfg(any(test, feature = "test-utils"))]
-        {
-            if config.enabled && is_test_kafka_container_running() {
-                tracing::info!(
-                    "Test mode: Test Kafka container detected, using Kafka event publisher"
-                );
-                match KafkaEventPublisher::new(config.clone()).await {
-                    Ok(publisher) => {
-                        return Ok(Arc::new(ConcreteEventPublisher::Kafka(publisher)));
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to create Kafka event publisher in test mode, falling back to no-op: {}",
-                            e
-                        );
-                        return Ok(Arc::new(ConcreteEventPublisher::NoOp(Arc::new(
-                            NoOpEventPublisher::new(),
-                        ))));
-                    }
-                }
-            }
-            tracing::info!(
-                "Test mode: No Kafka test container detected or Kafka disabled, using no-op event publisher"
-            );
-            return Ok(Arc::new(ConcreteEventPublisher::NoOp(Arc::new(
-                NoOpEventPublisher::new(),
-            ))));
-        }
-
-        #[cfg(not(any(test, feature = "test-utils")))]
-        {
-            // This branch should never be reached due to is_test_mode() check above,
-            // but included for completeness
-            tracing::info!(
-                "Test mode detected but test-utils feature not available, using no-op event publisher"
-            );
-            return Ok(Arc::new(ConcreteEventPublisher::NoOp(Arc::new(
-                NoOpEventPublisher::new(),
-            ))));
-        }
+    #[cfg(not(feature = "kafka"))]
+    {
+        let _ = config;
+        tracing::warn!(
+            "Kafka requested but rustycog `kafka` feature is disabled; using no-op publisher"
+        );
+        return Ok(Arc::new(ConcreteEventPublisher::NoOp(Arc::new(
+            NoOpEventPublisher::new(),
+        ))));
     }
 
-    // Production mode: use the original logic
-    if config.enabled {
-        match KafkaEventPublisher::new(config.clone()).await {
-            Ok(publisher) => {
-                tracing::info!("Created Kafka event publisher");
-                Ok(Arc::new(ConcreteEventPublisher::Kafka(publisher)))
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to create Kafka event publisher, falling back to no-op: {}",
-                    e
+    #[cfg(feature = "kafka")]
+    {
+        // In test mode, only use Kafka if explicitly enabled AND a test container is running
+        if is_test_mode() {
+            #[cfg(any(test, feature = "test-utils"))]
+            {
+                if config.enabled && is_test_kafka_container_running() {
+                    tracing::info!(
+                        "Test mode: Test Kafka container detected, using Kafka event publisher"
+                    );
+                    match KafkaEventPublisher::new(config.clone()).await {
+                        Ok(publisher) => {
+                            return Ok(Arc::new(ConcreteEventPublisher::Kafka(publisher)));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to create Kafka event publisher in test mode, falling back to no-op: {}",
+                                e
+                            );
+                            return Ok(Arc::new(ConcreteEventPublisher::NoOp(Arc::new(
+                                NoOpEventPublisher::new(),
+                            ))));
+                        }
+                    }
+                }
+                tracing::info!(
+                    "Test mode: No Kafka test container detected or Kafka disabled, using no-op event publisher"
                 );
-                // Fall back to no-op publisher if Kafka creation fails
-                Ok(Arc::new(ConcreteEventPublisher::NoOp(Arc::new(
+                return Ok(Arc::new(ConcreteEventPublisher::NoOp(Arc::new(
                     NoOpEventPublisher::new(),
-                ))))
+                ))));
+            }
+
+            #[cfg(not(any(test, feature = "test-utils")))]
+            {
+                tracing::info!(
+                    "Test mode detected but test-utils feature not available, using no-op event publisher"
+                );
+                return Ok(Arc::new(ConcreteEventPublisher::NoOp(Arc::new(
+                    NoOpEventPublisher::new(),
+                ))));
             }
         }
-    } else {
-        tracing::info!("Kafka disabled, using no-op event publisher");
-        Ok(Arc::new(ConcreteEventPublisher::NoOp(Arc::new(
-            NoOpEventPublisher::new(),
-        ))))
+
+        if config.enabled {
+            match KafkaEventPublisher::new(config.clone()).await {
+                Ok(publisher) => {
+                    tracing::info!("Created Kafka event publisher");
+                    Ok(Arc::new(ConcreteEventPublisher::Kafka(publisher)))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to create Kafka event publisher, falling back to no-op: {}",
+                        e
+                    );
+                    Ok(Arc::new(ConcreteEventPublisher::NoOp(Arc::new(
+                        NoOpEventPublisher::new(),
+                    ))))
+                }
+            }
+        } else {
+            tracing::info!("Kafka disabled, using no-op event publisher");
+            Ok(Arc::new(ConcreteEventPublisher::NoOp(Arc::new(
+                NoOpEventPublisher::new(),
+            ))))
+        }
     }
 }
 
@@ -323,7 +361,11 @@ pub trait EventHandler: Send + Sync {
 
 /// Concrete event consumer that can be Kafka, SQS, or `NoOp`
 pub enum ConcreteEventConsumer {
+    #[cfg(feature = "kafka")]
     Kafka(KafkaEventConsumer),
+    /// Placeholder so downstream matches compile when `kafka` is off.
+    #[cfg(not(feature = "kafka"))]
+    Kafka(()),
     Sqs(SqsEventConsumer),
     NoOp(NoOpEventConsumer),
 }
@@ -335,7 +377,10 @@ impl EventConsumer for ConcreteEventConsumer {
         H: EventHandler + Send + Sync + 'static,
     {
         match self {
+            #[cfg(feature = "kafka")]
             Self::Kafka(kafka) => kafka.start(handler).await,
+            #[cfg(not(feature = "kafka"))]
+            Self::Kafka(()) => Ok(()),
             Self::Sqs(sqs) => sqs.start(handler).await,
             Self::NoOp(no_op) => no_op.start(handler).await,
         }
@@ -343,7 +388,10 @@ impl EventConsumer for ConcreteEventConsumer {
 
     async fn stop(&self) -> Result<(), ServiceError> {
         match self {
+            #[cfg(feature = "kafka")]
             Self::Kafka(kafka) => kafka.stop().await,
+            #[cfg(not(feature = "kafka"))]
+            Self::Kafka(()) => Ok(()),
             Self::Sqs(sqs) => sqs.stop().await,
             Self::NoOp(no_op) => no_op.stop().await,
         }
@@ -351,7 +399,10 @@ impl EventConsumer for ConcreteEventConsumer {
 
     async fn health_check(&self) -> Result<(), ServiceError> {
         match self {
+            #[cfg(feature = "kafka")]
             Self::Kafka(kafka) => kafka.health_check().await,
+            #[cfg(not(feature = "kafka"))]
+            Self::Kafka(()) => Ok(()),
             Self::Sqs(sqs) => sqs.health_check().await,
             Self::NoOp(no_op) => no_op.health_check().await,
         }
@@ -378,71 +429,83 @@ pub async fn create_event_consumer_from_queue_config(
 pub async fn create_kafka_event_consumer(
     config: &KafkaConfig,
 ) -> Result<Arc<ConcreteEventConsumer>, ServiceError> {
-    // In test mode, only use Kafka if explicitly enabled AND a test container is running
-    if is_test_mode() {
-        #[cfg(any(test, feature = "test-utils"))]
-        {
-            if config.enabled && is_test_kafka_container_running() {
-                tracing::info!(
-                    "Test mode: Test Kafka container detected, using Kafka event consumer"
-                );
-                match KafkaEventConsumer::new(config.clone()).await {
-                    Ok(consumer) => {
-                        return Ok(Arc::new(ConcreteEventConsumer::Kafka(consumer)));
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to create Kafka event consumer in test mode, falling back to no-op: {}",
-                            e
-                        );
-                        return Ok(Arc::new(ConcreteEventConsumer::NoOp(
-                            NoOpEventConsumer::new(),
-                        )));
-                    }
-                }
-            }
-            tracing::info!(
-                "Test mode: No Kafka test container detected or Kafka disabled, using no-op event consumer"
-            );
-            return Ok(Arc::new(ConcreteEventConsumer::NoOp(
-                NoOpEventConsumer::new(),
-            )));
-        }
-
-        #[cfg(not(any(test, feature = "test-utils")))]
-        {
-            tracing::info!(
-                "Test mode detected but test-utils feature not available, using no-op event consumer"
-            );
-            return Ok(Arc::new(ConcreteEventConsumer::NoOp(
-                NoOpEventConsumer::new(),
-            )));
-        }
+    #[cfg(not(feature = "kafka"))]
+    {
+        let _ = config;
+        tracing::warn!(
+            "Kafka requested but rustycog `kafka` feature is disabled; using no-op consumer"
+        );
+        return Ok(Arc::new(ConcreteEventConsumer::NoOp(
+            NoOpEventConsumer::new(),
+        )));
     }
 
-    // Production mode: use the original logic
-    if config.enabled {
-        match KafkaEventConsumer::new(config.clone()).await {
-            Ok(consumer) => {
-                tracing::info!("Created Kafka event consumer");
-                Ok(Arc::new(ConcreteEventConsumer::Kafka(consumer)))
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to create Kafka event consumer, falling back to no-op: {}",
-                    e
+    #[cfg(feature = "kafka")]
+    {
+        // In test mode, only use Kafka if explicitly enabled AND a test container is running
+        if is_test_mode() {
+            #[cfg(any(test, feature = "test-utils"))]
+            {
+                if config.enabled && is_test_kafka_container_running() {
+                    tracing::info!(
+                        "Test mode: Test Kafka container detected, using Kafka event consumer"
+                    );
+                    match KafkaEventConsumer::new(config.clone()).await {
+                        Ok(consumer) => {
+                            return Ok(Arc::new(ConcreteEventConsumer::Kafka(consumer)));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to create Kafka event consumer in test mode, falling back to no-op: {}",
+                                e
+                            );
+                            return Ok(Arc::new(ConcreteEventConsumer::NoOp(
+                                NoOpEventConsumer::new(),
+                            )));
+                        }
+                    }
+                }
+                tracing::info!(
+                    "Test mode: No Kafka test container detected or Kafka disabled, using no-op event consumer"
                 );
-                // Fall back to no-op consumer if Kafka creation fails
-                Ok(Arc::new(ConcreteEventConsumer::NoOp(
+                return Ok(Arc::new(ConcreteEventConsumer::NoOp(
                     NoOpEventConsumer::new(),
-                )))
+                )));
+            }
+
+            #[cfg(not(any(test, feature = "test-utils")))]
+            {
+                tracing::info!(
+                    "Test mode detected but test-utils feature not available, using no-op event consumer"
+                );
+                return Ok(Arc::new(ConcreteEventConsumer::NoOp(
+                    NoOpEventConsumer::new(),
+                )));
             }
         }
-    } else {
-        tracing::info!("Kafka disabled, using no-op event consumer");
-        Ok(Arc::new(ConcreteEventConsumer::NoOp(
-            NoOpEventConsumer::new(),
-        )))
+
+        if config.enabled {
+            match KafkaEventConsumer::new(config.clone()).await {
+                Ok(consumer) => {
+                    tracing::info!("Created Kafka event consumer");
+                    Ok(Arc::new(ConcreteEventConsumer::Kafka(consumer)))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to create Kafka event consumer, falling back to no-op: {}",
+                        e
+                    );
+                    Ok(Arc::new(ConcreteEventConsumer::NoOp(
+                        NoOpEventConsumer::new(),
+                    )))
+                }
+            }
+        } else {
+            tracing::info!("Kafka disabled, using no-op event consumer");
+            Ok(Arc::new(ConcreteEventConsumer::NoOp(
+                NoOpEventConsumer::new(),
+            )))
+        }
     }
 }
 

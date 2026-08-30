@@ -362,9 +362,7 @@ impl KafkaEventConsumer {
     }
 
     /// Parse Kafka message into a domain event
-    fn parse_message(
-        message: &BorrowedMessage,
-    ) -> Result<Box<dyn DomainEvent>, ServiceError> {
+    fn parse_message(message: &BorrowedMessage) -> Result<Box<dyn DomainEvent>, ServiceError> {
         let payload = message.payload().ok_or_else(|| {
             ServiceError::infrastructure("Kafka message has no payload".to_string())
         })?;

@@ -15,7 +15,8 @@ use tracing::{debug, info, warn};
 use uuid;
 
 /// Global test Kafka container instance
-static TEST_KAFKA_CONTAINER: OnceLock<Arc<Mutex<Option<Arc<TestKafkaContainer>>>>> = OnceLock::new();
+static TEST_KAFKA_CONTAINER: OnceLock<Arc<Mutex<Option<Arc<TestKafkaContainer>>>>> =
+    OnceLock::new();
 
 /// Flag to track if cleanup handler has been registered
 static KAFKA_CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
@@ -307,7 +308,10 @@ impl TestKafkaFixture {
                 }
             }
         }
-        Err(format!("Event with type '{event_type}' not found within {timeout_secs} seconds").into())
+        Err(
+            format!("Event with type '{event_type}' not found within {timeout_secs} seconds")
+                .into(),
+        )
     }
 
     /// Cleanup Kafka container (for test cleanup)

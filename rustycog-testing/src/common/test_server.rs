@@ -48,9 +48,7 @@ where
     }
 
     // Check if we need to start a new server
-    let needs_new_server = server_guard
-        .as_ref()
-        .map_or(true, JoinHandle::is_finished);
+    let needs_new_server = server_guard.as_ref().map_or(true, JoinHandle::is_finished);
 
     let server_config = load_config_part::<ServerConfig>("server")?;
     let server_port = server_config.actual_port();

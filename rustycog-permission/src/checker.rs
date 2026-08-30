@@ -147,7 +147,8 @@ impl InMemoryPermissionChecker {
 
     /// Grant `action` on `resource` to `subject`.
     pub fn allow(&self, subject: Subject, action: Permission, resource: ResourceRef) {
-        let mut guard = self.tuples
+        let mut guard = self
+            .tuples
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.insert((subject, action, resource));
@@ -155,7 +156,8 @@ impl InMemoryPermissionChecker {
 
     /// Revoke `action` on `resource` from `subject`.
     pub fn deny(&self, subject: Subject, action: Permission, resource: ResourceRef) {
-        let mut guard = self.tuples
+        let mut guard = self
+            .tuples
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(&(subject, action, resource));
@@ -170,7 +172,8 @@ impl PermissionChecker for InMemoryPermissionChecker {
         action: Permission,
         resource: ResourceRef,
     ) -> Result<bool, DomainError> {
-        let guard = self.tuples
+        let guard = self
+            .tuples
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(guard.contains(&(subject, action, resource)))

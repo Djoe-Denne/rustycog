@@ -308,9 +308,7 @@ impl TestSqs {
     }
 
     /// Serialize domain event to SQS message body (same as SQS publisher)
-    fn serialize_event(
-        event: &dyn DomainEvent,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    fn serialize_event(event: &dyn DomainEvent) -> Result<String, Box<dyn std::error::Error>> {
         // Get the event JSON and parse it back to a Value so it's properly structured in the data field
         let event_json_str = event
             .to_json()
@@ -653,8 +651,7 @@ async fn get_or_create_test_sqs_container(
 
     if let Some(ref container) = *container_guard {
         // If container exists, we still need to load the config to return it
-        let queue_config =
-            load_config_part::<QueueConfig>("queue")?;
+        let queue_config = load_config_part::<QueueConfig>("queue")?;
         let sqs_config = match &queue_config {
             QueueConfig::Sqs(sqs_config) => sqs_config.clone(),
             QueueConfig::Kafka(_) => {
@@ -676,8 +673,7 @@ async fn get_or_create_test_sqs_container(
     SqsConfig::clear_port_cache();
 
     // Load configuration to understand SQS settings
-    let queue_config =
-        load_config_part::<QueueConfig>("queue")?;
+    let queue_config = load_config_part::<QueueConfig>("queue")?;
     let sqs_config = match &queue_config {
         QueueConfig::Sqs(sqs_config) => sqs_config.clone(),
         QueueConfig::Kafka(_) => {

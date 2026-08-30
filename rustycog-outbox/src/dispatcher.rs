@@ -82,6 +82,11 @@ where
         }
     }
 
+    /// Run the dispatcher loop until [`Self::stop`] is requested.
+    ///
+    /// # Errors
+    ///
+    /// Currently always returns `Ok` after the loop exits; cycle failures are logged.
     pub async fn start(&self) -> Result<(), ServiceError> {
         self.stop_requested.store(false, Ordering::SeqCst);
         info!(worker_id = %self.config.worker_id, "RustyCog outbox dispatcher started");
@@ -97,11 +102,22 @@ where
         Ok(())
     }
 
+    /// Request the dispatcher loop to exit.
+    ///
+    /// # Errors
+    ///
+    /// This method does not currently fail.
+    #[allow(clippy::unused_async)] // Public API stays async so callers can `.await` stop.
     pub async fn stop(&self) -> Result<(), ServiceError> {
         self.stop_requested.store(true, Ordering::SeqCst);
         Ok(())
     }
 
+    /// Claim and publish one outbox batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if claiming or publishing a stored event fails.
     pub async fn dispatch_once(&self) -> Result<usize, ServiceError> {
         let claimed = self.claim_batch().await?;
         let count = claimed.len();

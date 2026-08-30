@@ -56,6 +56,11 @@ pub struct TestDatabase {
 
 impl TestDatabase {
     /// Get or create the global test database instance
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the PostgreSQL test container cannot be started, the
+    /// connection pool cannot be created, or migrations fail.
     pub async fn new<D, T>(descriptor: Arc<D>) -> Result<Self, DbErr>
     where
         D: ServiceTestDescriptor<T>,
@@ -115,6 +120,10 @@ impl TestDatabase {
 }
 
 /// Get or create the global test container
+///
+/// The mutex guard is held for the whole initialization so two callers cannot
+/// start two PostgreSQL containers at once.
+#[allow(clippy::significant_drop_tightening)]
 async fn get_or_create_test_container() -> Result<Arc<TestDatabaseContainer>, DbErr> {
     let container_mutex = TEST_CONTAINER.get_or_init(|| Arc::new(Mutex::new(None)));
 
@@ -131,10 +140,10 @@ async fn get_or_create_test_container() -> Result<Arc<TestDatabaseContainer>, Db
     DatabaseConfig::clear_port_cache();
 
     // First, try to clean up any existing container with the same name
-    cleanup_existing_container().await;
+    cleanup_existing_container();
 
     // Load test configuration to get database settings
-    let db_config = create_base_test_config();
+    let db_config = create_base_test_config()?;
 
     // Determine the port to use
     let host_port = if db_config.port == 0 {
@@ -177,13 +186,13 @@ async fn get_or_create_test_container() -> Result<Arc<TestDatabaseContainer>, Db
     *container_guard = Some(test_container.clone());
 
     // Register cleanup handler on first container creation
-    register_cleanup_handler().await;
+    register_cleanup_handler();
 
     Ok(test_container)
 }
 
 /// Clean up any existing container with the test name
-async fn cleanup_existing_container() {
+fn cleanup_existing_container() {
     use std::process::Command;
 
     debug!("Checking for existing test container 'test-db'");
@@ -268,7 +277,13 @@ async fn wait_for_database(database_url: &str) -> Result<(), DbErr> {
 }
 
 /// Register cleanup handler to stop container when process exits
-async fn register_cleanup_handler() {
+fn register_cleanup_handler() {
+    extern "C" fn cleanup_on_exit() {
+        debug!("Process exiting, attempting to cleanup test database container...");
+        // Note: We can't do async cleanup here, but the container will be cleaned up
+        // by Docker eventually. This is just for logging.
+    }
+
     // Only register once
     if CLEANUP_REGISTERED.swap(true, Ordering::SeqCst) {
         return;
@@ -278,22 +293,15 @@ async fn register_cleanup_handler() {
 
     // Register cleanup for Ctrl+C and other signals
     let _ = ctrlc::set_handler(move || {
+        use std::process::Command;
+
         info!("Received termination signal, cleaning up test database container");
 
-        // Use direct docker command to cleanup the specific container
-        use std::process::Command;
         let _ = Command::new("docker").args(["stop", "test-db"]).output();
         let _ = Command::new("docker").args(["rm", "test-db"]).output();
 
         std::process::exit(0);
     });
-
-    // Register cleanup for normal process termination
-    extern "C" fn cleanup_on_exit() {
-        debug!("Process exiting, attempting to cleanup test database container...");
-        // Note: We can't do async cleanup here, but the container will be cleaned up
-        // by Docker eventually. This is just for logging.
-    }
 
     unsafe {
         libc::atexit(cleanup_on_exit);
@@ -301,12 +309,14 @@ async fn register_cleanup_handler() {
 }
 
 /// Create a base test configuration
-fn create_base_test_config() -> DatabaseConfig {
+fn create_base_test_config() -> Result<DatabaseConfig, DbErr> {
     // Load configuration from test.toml
     // The RUN_ENV=test environment variable should be set by the justfile
-    rustycog::config::load_config_part::<DatabaseConfig>("database").expect(
-        "Failed to load test configuration. Make sure RUN_ENV=test is set and config/test.toml exists."
-    )
+    rustycog::config::load_config_part::<DatabaseConfig>("database").map_err(|e| {
+        DbErr::Custom(format!(
+            "Failed to load test configuration: {e}. Make sure RUN_ENV=test is set and config/test.toml exists."
+        ))
+    })
 }
 
 /// Test fixture that automatically cleans up after each test
@@ -320,6 +330,11 @@ pub struct TestFixture {
 
 impl TestFixture {
     /// Create a new test fixture with database cleanup
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if OpenFGA is requested but no authorization model is
+    /// provided, or if the OpenFGA, database, or SQS fixtures cannot be created.
     pub async fn new<D, T>(descriptor: Arc<D>) -> Result<Self, DbErr>
     where
         D: ServiceTestDescriptor<T>,
@@ -332,31 +347,34 @@ impl TestFixture {
         // produce an `OpenFgaPermissionChecker` pointing at the
         // `test.toml` placeholders.
         let openfga = if descriptor.has_openfga() {
-            let model_json = descriptor.openfga_authorization_model_json().expect(
-                "ServiceTestDescriptor::has_openfga() returned true but \
-                     openfga_authorization_model_json() returned None",
-            );
+            let model_json = descriptor.openfga_authorization_model_json().ok_or_else(|| {
+                DbErr::Custom(
+                    "ServiceTestDescriptor::has_openfga() returned true but \
+                     openfga_authorization_model_json() returned None"
+                        .to_owned(),
+                )
+            })?;
             Some(
                 TestOpenFga::new(model_json)
                     .await
-                    .expect("Failed to create test OpenFGA"),
+                    .map_err(|e| DbErr::Custom(format!("Failed to create test OpenFGA: {e}")))?,
             )
         } else {
             None
         };
 
         let database = if descriptor.has_db() {
-            Some(
-                TestDatabase::new(descriptor.clone())
-                    .await
-                    .expect("Failed to create test database"),
-            )
+            Some(TestDatabase::new(descriptor.clone()).await?)
         } else {
             None
         };
 
         let sqs = if descriptor.has_sqs() {
-            Some(TestSqs::new().await.expect("Failed to create test SQS"))
+            Some(
+                TestSqs::new()
+                    .await
+                    .map_err(|e| DbErr::Custom(format!("Failed to create test SQS: {e}")))?,
+            )
         } else {
             None
         };
@@ -370,17 +388,36 @@ impl TestFixture {
     }
 
     /// Get the database connection
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixture was built without a database.
+    #[allow(clippy::expect_used)]
     pub fn db(&self) -> Arc<DatabaseConnection> {
-        self.database.as_ref().unwrap().get_connection()
+        self.database
+            .as_ref()
+            .expect("Database fixture was not requested by the test descriptor")
+            .get_connection()
     }
 
     /// Get the SQS client
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixture was built without SQS.
+    #[allow(clippy::expect_used)]
     pub const fn sqs(&self) -> &TestSqs {
-        self.sqs.as_ref().unwrap()
+        self.sqs
+            .as_ref()
+            .expect("SQS fixture was not requested by the test descriptor")
     }
 
-    /// Get the `OpenFGA` fixture. Panics when `descriptor.has_openfga()`
-    /// returned `false` at construction time.
+    /// Get the `OpenFGA` fixture.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `descriptor.has_openfga()` returned `false` at construction time.
+    #[allow(clippy::expect_used)]
     pub const fn openfga(&self) -> &TestOpenFga {
         self.openfga
             .as_ref()
@@ -388,6 +425,11 @@ impl TestFixture {
     }
 
     /// Mutable handle to the `OpenFGA` fixture (for `reset()` etc.).
+    ///
+    /// # Panics
+    ///
+    /// Panics when `descriptor.has_openfga()` returned `false` at construction time.
+    #[allow(clippy::expect_used)]
     pub const fn openfga_mut(&mut self) -> &mut TestOpenFga {
         self.openfga
             .as_mut()
@@ -395,6 +437,11 @@ impl TestFixture {
     }
 
     /// Cleanup the global test container (stops and removes it)
+    ///
+    /// # Errors
+    ///
+    /// The signature returns `Result` for API compatibility. Success is also
+    /// returned when no container is initialized or already taken.
     pub async fn cleanup_container() -> Result<(), DbErr> {
         let Some(container_mutex) = TEST_CONTAINER.get() else {
             debug!("Test container mutex not initialized");
@@ -406,6 +453,7 @@ impl TestFixture {
             debug!("No test container to cleanup");
             return Ok(());
         };
+        drop(container_guard);
 
         info!("Manually cleaning up test database container");
         cleanup_test_db_container(container_arc).await;

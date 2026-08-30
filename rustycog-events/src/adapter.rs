@@ -17,7 +17,8 @@ pub trait ErrorMapper<E>: Send + Sync {
     /// Map a custom error type to `ServiceError`
     fn to_service_error(&self, error: E) -> ServiceError;
 
-    /// Map a `ServiceError` back to custom error type
+    /// Map a `ServiceError` back to custom error type.
+    #[allow(clippy::wrong_self_convention)] // Mapper instances may carry mapping state.
     fn from_service_error(&self, error: ServiceError) -> E;
 }
 
@@ -39,7 +40,12 @@ impl<TError> GenericEventPublisherAdapter<TError> {
         }
     }
 
-    /// Publish a single event
+    /// Publish a single event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the inner publisher fails; the `ServiceError` is
+    /// mapped through [`ErrorMapper::from_service_error`].
     pub async fn publish(&self, event: &dyn DomainEvent) -> Result<(), TError> {
         tracing::info!("Publishing event: {:?}", event);
 
@@ -49,7 +55,12 @@ impl<TError> GenericEventPublisherAdapter<TError> {
             .map_err(|service_error| self.error_mapper.from_service_error(service_error))
     }
 
-    /// Publish multiple events in a batch
+    /// Publish multiple events in a batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the inner publisher fails; the `ServiceError` is
+    /// mapped through [`ErrorMapper::from_service_error`].
     pub async fn publish_batch(&self, events: &[Box<dyn DomainEvent>]) -> Result<(), TError> {
         self.inner
             .publish_batch(events)
@@ -57,7 +68,12 @@ impl<TError> GenericEventPublisherAdapter<TError> {
             .map_err(|service_error| self.error_mapper.from_service_error(service_error))
     }
 
-    /// Health check
+    /// Health check.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the inner publisher health check fails; the
+    /// `ServiceError` is mapped through [`ErrorMapper::from_service_error`].
     pub async fn health_check(&self) -> Result<(), TError> {
         self.inner
             .health_check()

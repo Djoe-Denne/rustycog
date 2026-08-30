@@ -12,7 +12,7 @@ use std::env;
 #[cfg(feature = "scaleway-loki")]
 fn build_scaleway_loki_stack<C: ServiceLoggerConfig>(
     config: &C,
-    scaleway_loki: ScalewayLokiLoggingOutput,
+    scaleway_loki: &ScalewayLokiLoggingOutput,
 ) -> anyhow::Result<(tracing_loki::Layer, tracing_loki::BackgroundTask)> {
     let loki_endpoint = format!(
         "https://{}.logs.cockpit.{}.scw.cloud",
@@ -58,7 +58,6 @@ pub fn setup_logging<C: ServiceLoggerConfig>(config: &C) {
     let level_directive = match config.logging_config().level.to_lowercase().as_str() {
         "trace" => "trace",
         "debug" => "debug",
-        "info" => "info",
         "warn" => "warn",
         "error" => "error",
         _ => "info",
@@ -79,21 +78,19 @@ pub fn setup_logging<C: ServiceLoggerConfig>(config: &C) {
         .with_thread_names(true);
 
     #[cfg(feature = "scaleway-loki")]
-    let (loki_layer, loki_task) =
-        if let Some(scaleway_loki) = config.logging_config().scaleway_loki.clone() {
-            match build_scaleway_loki_stack(config, scaleway_loki) {
-                Ok((layer, task)) => (Some(layer), Some(task)),
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        "failed to initialize Scaleway Loki exporter; continuing without Loki"
-                    );
-                    (None, None)
-                }
+    let (loki_layer, loki_task) = config.logging_config().scaleway_loki.as_ref().map_or_else(
+        || (None, None),
+        |scaleway_loki| match build_scaleway_loki_stack(config, scaleway_loki) {
+            Ok((layer, task)) => (Some(layer), Some(task)),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to initialize Scaleway Loki exporter; continuing without Loki"
+                );
+                (None, None)
             }
-        } else {
-            (None, None)
-        };
+        },
+    );
 
     #[cfg(not(feature = "scaleway-loki"))]
     let loki_layer: Option<tracing_subscriber::fmt::Layer<_>> = None;

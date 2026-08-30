@@ -19,16 +19,28 @@ pub struct UserIdExtractor {
 
 impl UserIdExtractor {
     /// Create a new user ID extractor
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError`] if the HS256 JWT secret is missing or empty.
     pub fn new(auth_config: AuthConfig) -> Result<Self, CommandError> {
         Self::from_secret(auth_config.jwt.hs256_secret, None)
     }
 
     /// Create a new user ID extractor with a pre-resolved secret
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError`] if the provided secret is empty after trimming.
     pub fn from_resolved_secret(secret: impl Into<String>) -> Result<Self, CommandError> {
         Self::from_secret(Some(secret.into()), None)
     }
 
     /// Create a new user ID extractor with a default user ID
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError`] if the HS256 JWT secret is missing or empty.
     pub fn with_default_user_id(
         auth_config: AuthConfig,
         user_id: Uuid,
@@ -63,7 +75,7 @@ impl UserIdExtractor {
         validation
     }
 
-    fn map_jwt_error(error: jsonwebtoken::errors::Error) -> CommandError {
+    fn map_jwt_error(error: &jsonwebtoken::errors::Error) -> CommandError {
         match error.kind() {
             ErrorKind::ExpiredSignature => {
                 CommandError::authentication("token_expired", "Token has expired")
@@ -73,6 +85,12 @@ impl UserIdExtractor {
     }
 
     /// Extract user ID from token with signature verification and claim validation
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError`] if the token is empty (and no default user is
+    /// configured), signature verification fails, required claims are missing,
+    /// the token is expired, or the subject is not a valid UUID.
     pub fn extract_user_id(&self, token: &str) -> Result<Uuid, CommandError> {
         if token.trim().is_empty() {
             if let Some(default_user_id) = self.default_user_id {
@@ -92,7 +110,7 @@ impl UserIdExtractor {
             &DecodingKey::from_secret(self.hs256_secret.as_bytes()),
             &Self::validation(),
         )
-        .map_err(Self::map_jwt_error)?;
+        .map_err(|error| Self::map_jwt_error(&error))?;
 
         let claims = token_data.claims;
 

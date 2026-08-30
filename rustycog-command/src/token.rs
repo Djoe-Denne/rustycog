@@ -43,8 +43,7 @@ impl Command for ValidateTokenCommand {
         }
 
         // Basic JWT format validation (three parts separated by dots)
-        let parts: Vec<&str> = self.token.split('.').collect();
-        if parts.len() != 3 {
+        if self.token.split('.').count() != 3 {
             return Err(CommandError::validation(
                 "invalid_token_format",
                 "Invalid JWT token format",

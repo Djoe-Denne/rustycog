@@ -114,6 +114,11 @@ impl TestOpenFga {
     /// uploads the authorization model. Subsequent calls reuse the same
     /// container but always create a **fresh** store + model so back-to-back
     /// tests never see each other's tuples.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the singleton container cannot be started, if the
+    /// HTTP client cannot be built, or if store and model provisioning fails.
     pub async fn new(model_json: &'static str) -> Result<Self, Box<dyn std::error::Error>> {
         let (_container, base_url, port) = get_or_create_test_openfga_container().await?;
 
@@ -186,6 +191,10 @@ impl TestOpenFga {
     /// `[user]` direct restrictions, so this helper translates each
     /// permission to its underlying source relation
     /// ([`writable_relation_for`]) and writes that.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying [`Self::write_tuple`] call fails.
     pub async fn allow(
         &self,
         subject: Subject,
@@ -202,6 +211,10 @@ impl TestOpenFga {
     /// underlying-relation tuple. Tolerates `cannot_delete_unknown_tuple`
     /// so tests can call `deny` defensively without first having written
     /// the tuple.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying [`Self::delete_tuple`] call fails.
     pub async fn deny(
         &self,
         subject: Subject,
@@ -217,6 +230,10 @@ impl TestOpenFga {
     /// Wildcard-allow: grants `(user:*, action, resource)`. Only meaningful
     /// when the `OpenFGA` model declares the underlying relation with
     /// `[user, user:*]` (today only `project.viewer`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying [`Self::write_tuple`] call fails.
     pub async fn allow_wildcard(
         &self,
         action: Permission,
@@ -229,6 +246,10 @@ impl TestOpenFga {
     }
 
     /// Wildcard-deny: removes the `(user:*, action, resource)` tuple.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying [`Self::delete_tuple`] call fails.
     pub async fn deny_wildcard(
         &self,
         action: Permission,
@@ -244,6 +265,10 @@ impl TestOpenFga {
     /// to `subject` on `resource`. Use when a happy-path test does not care
     /// about authorization fidelity and only needs to clear every route
     /// guard in its scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any of the per-permission [`Self::allow`] calls fails.
     pub async fn allow_all(
         &self,
         subject: Subject,
@@ -258,6 +283,11 @@ impl TestOpenFga {
     /// Raw-tuple escape hatch for relations not enumerated by [`Permission`]
     /// (e.g. structural `member` / `viewer` / `organization` tuples that
     /// `sentinel-sync` writes but the checker never asks about directly).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the OpenFGA write HTTP call fails or the store
+    /// rejects the tuple for a reason other than a duplicate.
     pub async fn write_tuple(
         &self,
         user: &str,
@@ -302,6 +332,11 @@ impl TestOpenFga {
     }
 
     /// Raw-tuple escape hatch mirror of [`Self::write_tuple`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the OpenFGA delete HTTP call fails or the store
+    /// rejects the delete for a reason other than an unknown tuple.
     pub async fn delete_tuple(
         &self,
         user: &str,
@@ -344,12 +379,27 @@ impl TestOpenFga {
     /// Read tuples back from the store. Pass `None` for any field to leave
     /// it unconstrained. Useful for tests that want to assert what
     /// `sentinel-sync` (or test arrange code) wrote.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the OpenFGA read HTTP call fails or the response
+    /// cannot be decoded.
     pub async fn read_tuples(
         &self,
         user: Option<&str>,
         relation: Option<&str>,
         object: Option<&str>,
     ) -> Result<Vec<TupleKey>, Box<dyn std::error::Error>> {
+        #[derive(Deserialize)]
+        struct ReadResponse {
+            #[serde(default)]
+            tuples: Vec<TupleEntry>,
+        }
+        #[derive(Deserialize)]
+        struct TupleEntry {
+            key: TupleKey,
+        }
+
         let mut tuple_key = serde_json::Map::new();
         if let Some(u) = user {
             tuple_key.insert("user".into(), Value::String(u.to_string()));
@@ -370,16 +420,6 @@ impl TestOpenFga {
             return Err(format!("OpenFGA read returned {status}: {text}").into());
         }
 
-        #[derive(Deserialize)]
-        struct ReadResponse {
-            #[serde(default)]
-            tuples: Vec<TupleEntry>,
-        }
-        #[derive(Deserialize)]
-        struct TupleEntry {
-            key: TupleKey,
-        }
-
         let decoded: ReadResponse = response.json().await?;
         Ok(decoded.tuples.into_iter().map(|t| t.key).collect())
     }
@@ -394,6 +434,10 @@ impl TestOpenFga {
     /// captured the *previous* store id when they constructed
     /// `OpenFgaPermissionChecker`. They will keep talking to a now-deleted
     /// store. Reset before booting the app, not after — or rebuild the app.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if store recreation or model re-upload fails.
     pub async fn reset(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let delete_url = format!("{}/stores/{}", self.base_url, self.store_id);
         let _ = self.client.delete(&delete_url).send().await; // best-effort
@@ -415,11 +459,12 @@ pub struct TupleKey {
     pub object: String,
 }
 
-/// Map a `(object_type, Permission)` pair to the `OpenFGA` relation a tuple
-/// must be written on so that `Check(subject, Permission::relation(),
-/// object)` succeeds against the checked-in
-/// [`openfga/model.json`](../../../../openfga/model.json) authorization
-/// model.
+/// Map an object type and [`Permission`] to the writable OpenFGA relation.
+///
+/// The returned relation is the one a tuple must be written on so that
+/// `Check(subject, Permission::relation(), object)` succeeds against the
+/// checked-in [`openfga/model.json`](../../../../openfga/model.json)
+/// authorization model.
 ///
 /// `Permission::relation()` returns the *derived* relation
 /// (`administer`, `own`, `read`, `write`); those relations are computed
@@ -436,11 +481,17 @@ pub struct TupleKey {
 ///   relations are *only* derivable from a parent project tuple — write
 ///   `(subject, Admin, project:<id>)` instead of trying to grant admin
 ///   directly on a component.
+///
+/// # Panics
+///
+/// Panics when `object_type` is `component` and `action` is
+/// [`Permission::Admin`] or [`Permission::Owner`]. Those relations are only
+/// derivable from a parent project tuple; write the project grant instead.
 #[must_use]
+#[allow(clippy::panic)] // Test helper: invalid component admin/owner must abort.
 pub fn writable_relation_for(object_type: &str, action: Permission) -> &'static str {
     match (object_type, action) {
         ("notification", _) => "recipient",
-        ("component", Permission::Read) => "viewer",
         ("component", Permission::Write) => "editor",
         ("component", Permission::Admin | Permission::Owner) => panic!(
             "component admin/owner is not directly writable; grant the parent project tuple instead"
@@ -470,17 +521,19 @@ async fn get_or_create_test_openfga_container(
     let container_mutex = TEST_OPENFGA_CONTAINER.get_or_init(|| Arc::new(Mutex::new(None)));
     let mut container_guard = container_mutex.lock().await;
 
-    if let Some(ref container) = *container_guard {
-        return Ok((
+    if let Some(container) = container_guard.as_ref() {
+        let existing = (
             container.clone(),
             container.base_url.clone(),
             container.port,
-        ));
+        );
+        drop(container_guard);
+        return Ok(existing);
     }
 
     info!("Creating new OpenFGA test container");
 
-    cleanup_existing_openfga_container().await;
+    cleanup_existing_openfga_container();
 
     // Clear only the OpenFGA port cache so a fresh container gets a fresh
     // random port instead of pointing at a previously-resolved port whose
@@ -498,9 +551,10 @@ async fn get_or_create_test_openfga_container(
                 error = %err,
                 "Failed to load [openfga] config; falling back to default (port = 0)"
             );
-            let mut cfg = OpenFgaClientConfig::default();
-            cfg.port = 0;
-            cfg
+            OpenFgaClientConfig {
+                port: 0,
+                ..OpenFgaClientConfig::default()
+            }
         });
     let port = openfga_config.actual_port();
 
@@ -526,14 +580,15 @@ async fn get_or_create_test_openfga_container(
         port,
     });
     *container_guard = Some(test_container.clone());
+    drop(container_guard);
 
-    register_openfga_cleanup_handler().await;
+    register_openfga_cleanup_handler();
 
     Ok((test_container, base_url, port))
 }
 
 /// Defensive shellout to remove any leaked container from a prior run.
-async fn cleanup_existing_openfga_container() {
+fn cleanup_existing_openfga_container() {
     use std::process::Command;
     debug!("Checking for existing OpenFGA test container '{CONTAINER_NAME}'");
     let _ = Command::new("docker")
@@ -545,7 +600,7 @@ async fn cleanup_existing_openfga_container() {
     debug!("Cleaned up container: {CONTAINER_NAME}");
 }
 
-async fn register_openfga_cleanup_handler() {
+fn register_openfga_cleanup_handler() {
     if OPENFGA_CLEANUP_REGISTERED.swap(true, Ordering::SeqCst) {
         return;
     }

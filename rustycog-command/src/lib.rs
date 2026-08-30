@@ -97,12 +97,12 @@ impl CommandError {
     #[must_use]
     pub fn code(&self) -> &str {
         match self {
-            Self::Validation { code, .. } => code,
-            Self::Authentication { code, .. } => code,
-            Self::Business { code, .. } => code,
-            Self::Infrastructure { code, .. } => code,
-            Self::Timeout { code, .. } => code,
-            Self::RetryExhausted { code, .. } => code,
+            Self::Validation { code, .. }
+            | Self::Authentication { code, .. }
+            | Self::Business { code, .. }
+            | Self::Infrastructure { code, .. }
+            | Self::Timeout { code, .. }
+            | Self::RetryExhausted { code, .. } => code,
         }
     }
 
@@ -110,12 +110,12 @@ impl CommandError {
     #[must_use]
     pub fn message(&self) -> &str {
         match self {
-            Self::Validation { message, .. } => message,
-            Self::Authentication { message, .. } => message,
-            Self::Business { message, .. } => message,
-            Self::Infrastructure { message, .. } => message,
-            Self::Timeout { message, .. } => message,
-            Self::RetryExhausted { message, .. } => message,
+            Self::Validation { message, .. }
+            | Self::Authentication { message, .. }
+            | Self::Business { message, .. }
+            | Self::Infrastructure { message, .. }
+            | Self::Timeout { message, .. }
+            | Self::RetryExhausted { message, .. } => message,
         }
     }
 }
@@ -133,6 +133,10 @@ pub trait Command: Debug + Send + Sync {
     fn command_id(&self) -> Uuid;
 
     /// Validate the command before execution
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError`] if the command fails validation.
     fn validate(&self) -> Result<(), CommandError>;
 }
 

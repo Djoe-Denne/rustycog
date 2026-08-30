@@ -69,6 +69,13 @@ impl Permission {
     }
 
     /// Parse a permission from its string representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if `s` is not `read`, `write`, `admin`, or `owner`.
+    ///
+    /// Inherent method kept so call sites do not need [`std::str::FromStr`] in scope.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Result<Self, DomainError> {
         match s.to_lowercase().as_str() {
             "read" => Ok(Self::Read),
@@ -89,8 +96,16 @@ impl std::fmt::Display for Permission {
 }
 
 impl From<String> for Permission {
+    /// Converts a known permission name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `s` is not a recognized permission name. Kept as [`From`]
+    /// for existing call sites; prefer [`Permission::from_str`] when the
+    /// input may be invalid.
+    #[allow(clippy::fallible_impl_from)]
     fn from(s: String) -> Self {
-        Self::from_str(&s).unwrap()
+        Self::from_str(&s).expect("Permission::from requires a known permission name")
     }
 }
 
@@ -137,12 +152,13 @@ impl std::fmt::Display for ResourceId {
     }
 }
 
-/// Discriminant for [`Subject`] — `User` for an authenticated UUID-bearing
-/// caller, `Wildcard` for the anonymous "any user" subject (`user:*` on the
-/// `OpenFGA` wire). Anonymous routes can hand a `Subject::wildcard()` to the
-/// checker instead of failing closed before the call, so a public-read
-/// tuple like `project:{id}#viewer@user:*` (written by `sentinel-sync` for
-/// public projects) is honored.
+/// Discriminant for [`Subject`].
+///
+/// `User` is an authenticated UUID-bearing caller; `Wildcard` is the
+/// anonymous "any user" subject (`user:*` on the `OpenFGA` wire).
+/// Anonymous routes can hand a `Subject::wildcard()` to the checker
+/// instead of failing closed, so a public-read tuple like
+/// `project:{id}#viewer@user:*` is honored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SubjectKind {
     User,

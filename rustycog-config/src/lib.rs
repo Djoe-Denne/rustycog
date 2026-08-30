@@ -49,18 +49,23 @@ impl Default for ServerConfig {
 impl ServerConfig {
     /// Resolve the configured HTTP port. When `port == 0`, pick one free host
     /// port and cache it so the server and test client agree.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn actual_port(&self) -> u16 {
         if self.port == 0 {
             let cache_key = format!("server:{}", self.host);
             let cache = PORT_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
-            let mut port_cache = cache.lock().unwrap();
-
-            if let Some(&cached_port) = port_cache.get(&cache_key) {
-                return cached_port;
-            }
-
-            let random_port = Self::get_random_port();
-            port_cache.insert(cache_key, random_port);
+            let random_port = {
+                let mut port_cache = cache.lock().expect("PORT_CACHE mutex poisoned");
+                if let Some(&cached_port) = port_cache.get(&cache_key) {
+                    return cached_port;
+                }
+                let random_port = Self::get_random_port();
+                port_cache.insert(cache_key, random_port);
+                random_port
+            };
             debug!("Generated random server port: {}", random_port);
             random_port
         } else {
@@ -69,16 +74,12 @@ impl ServerConfig {
     }
 
     fn get_random_port() -> u16 {
-        use std::net::{SocketAddr, TcpListener};
+        use std::net::TcpListener;
 
-        match TcpListener::bind("127.0.0.1:0") {
-            Ok(listener) => match listener.local_addr() {
-                Ok(SocketAddr::V4(addr)) => addr.port(),
-                Ok(SocketAddr::V6(addr)) => addr.port(),
-                Err(_) => 8080,
-            },
-            Err(_) => 8080,
-        }
+        TcpListener::bind("127.0.0.1:0")
+            .ok()
+            .and_then(|listener| listener.local_addr().ok())
+            .map_or(8080, |addr| addr.port())
     }
 }
 
@@ -141,40 +142,33 @@ impl DatabaseConfig {
 
     /// Get a random available port
     fn get_random_port() -> u16 {
-        use std::net::{SocketAddr, TcpListener};
+        use std::net::TcpListener;
 
-        // Try to bind to a random port
-        match TcpListener::bind("127.0.0.1:0") {
-            Ok(listener) => {
-                match listener.local_addr() {
-                    Ok(SocketAddr::V4(addr)) => addr.port(),
-                    Ok(SocketAddr::V6(addr)) => addr.port(),
-                    Err(_) => 5432, // fallback to default
-                }
-            }
-            Err(_) => 5432, // fallback to default
-        }
+        TcpListener::bind("127.0.0.1:0")
+            .ok()
+            .and_then(|listener| listener.local_addr().ok())
+            .map_or(5432, |addr| addr.port())
     }
 
     /// Get the actual port being used (resolves random port if needed)
     /// This method caches the resolved port to ensure consistency across calls
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn actual_port(&self) -> u16 {
         if self.port == 0 {
-            // Create a unique cache key for this database configuration
             let cache_key = format!("{}:{}:{}", self.host, self.db, self.creds.username);
-
             let cache = PORT_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
-            let mut port_cache = cache.lock().unwrap();
-
-            // Return cached port if available
-            if let Some(&cached_port) = port_cache.get(&cache_key) {
-                return cached_port;
+            {
+                let mut port_cache = cache.lock().expect("PORT_CACHE mutex poisoned");
+                if let Some(&cached_port) = port_cache.get(&cache_key) {
+                    return cached_port;
+                }
+                let random_port = Self::get_random_port();
+                port_cache.insert(cache_key, random_port);
+                random_port
             }
-
-            // Generate new random port and cache it
-            let random_port = Self::get_random_port();
-            port_cache.insert(cache_key, random_port);
-            random_port
         } else {
             self.port
         }
@@ -199,6 +193,11 @@ impl DatabaseConfig {
     }
 
     /// Create a `DatabaseConfig` from a URL (for backward compatibility)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `url` is not a valid URL, does not use a `postgres`
+    /// or `postgresql` scheme, or does not include a database name in the path.
     pub fn from_url(url: &str) -> Result<Self, String> {
         use url::Url;
 
@@ -222,12 +221,16 @@ impl DatabaseConfig {
     }
 
     /// Clear the port cache (useful for testing)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn clear_port_cache() {
         if let Some(cache) = PORT_CACHE.get() {
-            let mut port_cache = cache.lock().unwrap();
-
-            // Create a unique cache key for this database configuration
-            port_cache.remove(&"db".to_string());
+            cache
+                .lock()
+                .expect("PORT_CACHE mutex poisoned")
+                .remove(&"db".to_string());
             debug!("DB port cleared from cache");
         }
     }
@@ -377,14 +380,17 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+#[allow(clippy::unnecessary_wraps)] // serde `default` must match `Option` field type
 fn default_console_logging_output() -> Option<ConsoleLoggingOutput> {
     Some(ConsoleLoggingOutput::default())
 }
 
+#[allow(clippy::unnecessary_wraps)] // serde `default` must match `Option` field type
 fn default_file_logging_output() -> Option<FileLoggingOutput> {
     Some(FileLoggingOutput::default())
 }
 
+#[allow(clippy::unnecessary_wraps)] // serde `default` must match `Option` field type
 fn default_scaleway_loki_logging_output() -> Option<ScalewayLokiLoggingOutput> {
     Some(ScalewayLokiLoggingOutput::default())
 }
@@ -523,7 +529,7 @@ impl SqsConfig {
     pub fn is_fifo_queue(&self, queue_name: &str) -> bool {
         std::path::Path::new(queue_name)
             .extension()
-            .and_then(|ext| ext.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .is_some_and(|ext| ext.eq_ignore_ascii_case("fifo"))
     }
 
@@ -604,41 +610,34 @@ impl SqsConfig {
 
     /// Get a random available port
     fn get_random_port() -> u16 {
-        use std::net::{SocketAddr, TcpListener};
+        use std::net::TcpListener;
 
-        // Try to bind to a random port
-        match TcpListener::bind("127.0.0.1:0") {
-            Ok(listener) => {
-                match listener.local_addr() {
-                    Ok(SocketAddr::V4(addr)) => addr.port(),
-                    Ok(SocketAddr::V6(addr)) => addr.port(),
-                    Err(_) => 4566, // fallback to LocalStack default
-                }
-            }
-            Err(_) => 4566, // fallback to LocalStack default
-        }
+        TcpListener::bind("127.0.0.1:0")
+            .ok()
+            .and_then(|listener| listener.local_addr().ok())
+            .map_or(4566, |addr| addr.port())
     }
 
     /// Get the actual port being used (resolves random port if needed)
     /// This method caches the resolved port to ensure consistency across calls
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn actual_port(&self) -> u16 {
         if self.port == 0 {
-            // Create a unique cache key for this SQS configuration
             let cache_key = format!("sqs:{}:{}", self.host, self.region);
-
             let cache = PORT_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
-            let mut port_cache = cache.lock().unwrap();
-
-            // Return cached port if available
-            if let Some(&cached_port) = port_cache.get(&cache_key) {
-                debug!("Using cached SQS port: {}", cached_port);
-                return cached_port;
-            }
-
-            // Generate new random port and cache it
-            let random_port = Self::get_random_port();
-            port_cache.insert(cache_key, random_port);
-
+            let random_port = {
+                let mut port_cache = cache.lock().expect("PORT_CACHE mutex poisoned");
+                if let Some(&cached_port) = port_cache.get(&cache_key) {
+                    debug!("Using cached SQS port: {}", cached_port);
+                    return cached_port;
+                }
+                let random_port = Self::get_random_port();
+                port_cache.insert(cache_key, random_port);
+                random_port
+            };
             debug!("Generated random SQS port: {}", random_port);
             random_port
         } else {
@@ -691,11 +690,16 @@ impl SqsConfig {
     }
 
     /// Clear the port cache for SQS
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn clear_port_cache() {
         if let Some(cache) = PORT_CACHE.get() {
-            let mut port_cache = cache.lock().unwrap();
-            // Create a unique cache key for this SQS configuration
-            port_cache.remove(&"sqs".to_string());
+            cache
+                .lock()
+                .expect("PORT_CACHE mutex poisoned")
+                .remove(&"sqs".to_string());
             debug!("SQS port cleared from cache");
         }
     }
@@ -804,19 +808,24 @@ impl OpenFgaClientConfig {
 
     /// Resolve the configured port. When `port == 0`, picks a random free port
     /// once for this host and caches it for the rest of the process.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn actual_port(&self) -> u16 {
         if self.port == 0 {
             let cache_key = format!("openfga:{}", self.host);
             let cache = PORT_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
-            let mut port_cache = cache.lock().unwrap();
-
-            if let Some(&cached_port) = port_cache.get(&cache_key) {
-                debug!("Using cached OpenFGA port: {}", cached_port);
-                return cached_port;
-            }
-
-            let random_port = Self::get_random_port();
-            port_cache.insert(cache_key, random_port);
+            let random_port = {
+                let mut port_cache = cache.lock().expect("PORT_CACHE mutex poisoned");
+                if let Some(&cached_port) = port_cache.get(&cache_key) {
+                    debug!("Using cached OpenFGA port: {}", cached_port);
+                    return cached_port;
+                }
+                let random_port = Self::get_random_port();
+                port_cache.insert(cache_key, random_port);
+                random_port
+            };
             debug!("Generated random OpenFGA port: {}", random_port);
             random_port
         } else {
@@ -825,24 +834,26 @@ impl OpenFgaClientConfig {
     }
 
     fn get_random_port() -> u16 {
-        use std::net::{SocketAddr, TcpListener};
+        use std::net::TcpListener;
 
-        match TcpListener::bind("127.0.0.1:0") {
-            Ok(listener) => match listener.local_addr() {
-                Ok(SocketAddr::V4(addr)) => addr.port(),
-                Ok(SocketAddr::V6(addr)) => addr.port(),
-                Err(_) => default_openfga_port(),
-            },
-            Err(_) => default_openfga_port(),
-        }
+        TcpListener::bind("127.0.0.1:0")
+            .ok()
+            .and_then(|listener| listener.local_addr().ok())
+            .map_or_else(default_openfga_port, |addr| addr.port())
     }
 
     /// Clear cached random `OpenFGA` ports so the next container start gets a
     /// fresh host port.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn clear_port_cache() {
         if let Some(cache) = PORT_CACHE.get() {
-            let mut port_cache = cache.lock().unwrap();
-            port_cache.retain(|key, _| !key.starts_with("openfga:"));
+            cache
+                .lock()
+                .expect("PORT_CACHE mutex poisoned")
+                .retain(|key, _| !key.starts_with("openfga:"));
             debug!("OpenFGA port cleared from cache");
         }
     }
@@ -980,38 +991,32 @@ impl KafkaConfig {
     fn get_random_port() -> u16 {
         use std::net::TcpListener;
 
-        // Try to bind to a random port
-        match TcpListener::bind("127.0.0.1:0") {
-            Ok(listener) => {
-                match listener.local_addr() {
-                    Ok(addr) => addr.port(),
-                    Err(_) => 9092, // fallback to default
-                }
-            }
-            Err(_) => 9092, // fallback to default
-        }
+        TcpListener::bind("127.0.0.1:0")
+            .ok()
+            .and_then(|listener| listener.local_addr().ok())
+            .map_or(9092, |addr| addr.port())
     }
 
     /// Get the actual port being used (resolves random port if needed)
     /// This method caches the resolved port to ensure consistency across calls
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn actual_port(&self) -> u16 {
         if self.port == 0 {
-            // Create a unique cache key for this Kafka configuration
             let cache_key = format!("kafka:{}:{}", self.host, self.client_id);
-
             let cache = PORT_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
-            let mut port_cache = cache.lock().unwrap();
-
-            // Return cached port if available
-            if let Some(&cached_port) = port_cache.get(&cache_key) {
-                debug!("cached_port: {}", cached_port);
-                return cached_port;
+            {
+                let mut port_cache = cache.lock().expect("PORT_CACHE mutex poisoned");
+                if let Some(&cached_port) = port_cache.get(&cache_key) {
+                    debug!("cached_port: {}", cached_port);
+                    return cached_port;
+                }
+                let random_port = Self::get_random_port();
+                port_cache.insert(cache_key, random_port);
+                random_port
             }
-
-            // Generate new random port and cache it
-            let random_port = Self::get_random_port();
-            port_cache.insert(cache_key, random_port);
-            random_port
         } else {
             self.port
         }
@@ -1042,6 +1047,11 @@ impl KafkaConfig {
     }
 
     /// Create a `KafkaConfig` from a brokers string (for backward compatibility)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `brokers` is empty, a broker is not `host:port`,
+    /// or the port is not a valid `u16`.
     pub fn from_brokers(brokers: &str) -> Result<Self, String> {
         let broker_list: Vec<&str> = brokers.split(',').collect();
         if broker_list.is_empty() {
@@ -1095,11 +1105,16 @@ impl KafkaConfig {
     }
 
     /// Clear the port cache (useful for testing)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn clear_port_cache() {
         if let Some(cache) = PORT_CACHE.get() {
-            let mut port_cache = cache.lock().unwrap();
-            // Create a unique cache key for this Kafka configuration
-            port_cache.remove(&"kafka".to_string());
+            cache
+                .lock()
+                .expect("PORT_CACHE mutex poisoned")
+                .remove(&"kafka".to_string());
             debug!("Kafka port cleared from cache");
         }
     }
@@ -1166,10 +1181,10 @@ fn default_kafka_security_protocol() -> String {
     "plaintext".to_string()
 }
 
-/// Generic configuration cache and loading functionality
-/// This allows any service to implement their own configuration structure
-/// while using the same caching and loading logic.
-
+// Generic configuration cache and loading functionality.
+//
+// This allows any service to implement their own configuration structure
+// while using the same caching and loading logic.
 /// Configuration cache trait that services must implement
 pub trait ConfigCache<T> {
     /// Get the cached configuration if available
@@ -1219,6 +1234,11 @@ pub trait HasOpenFgaConfig {
 }
 
 /// Load configuration with caching
+///
+/// # Errors
+///
+/// Returns a `ConfigError` if configuration files or environment variables
+/// cannot be loaded.
 pub fn load_config_with_cache<T, C>() -> Result<T, ConfigError>
 where
     T: ConfigLoader<T>,
@@ -1241,6 +1261,11 @@ where
 }
 
 /// Load fresh configuration without caching
+///
+/// # Errors
+///
+/// Returns a `ConfigError` if configuration files or environment variables
+/// cannot be loaded.
 pub fn load_config_fresh<T>() -> Result<T, ConfigError>
 where
     T: ConfigLoader<T>,
@@ -1322,41 +1347,42 @@ fn build_config_with_env_prefix(env_prefix: &str) -> Result<Config, ConfigError>
 /// Load a specific configuration part (server, database, logging, queue, etc.)
 /// This is useful when you only need a specific part of the configuration
 /// rather than loading the entire application config.
+///
+/// # Errors
+///
+/// Returns a `ConfigError` if configuration files or environment variables
+/// cannot be loaded.
 pub fn load_config_part<T>(section_name: &str) -> Result<T, ConfigError>
 where
     T: for<'de> Deserialize<'de> + Default + Clone,
 {
-    // Use uppercase section name as environment prefix
     let env_prefix = section_name.to_uppercase();
     let config = build_config_with_env_prefix(&env_prefix)?;
 
     tracing::info!("Loading {} configuration", section_name);
 
-    // Try to deserialize the specific section
-    match config.get::<T>(section_name) {
-        Ok(parsed_config) => {
-            tracing::info!("{} configuration loaded successfully", section_name);
-            Ok(parsed_config)
-        }
-        Err(_) => {
-            // Section not found or failed to parse, try to deserialize the entire config as the target type
-            // This handles cases where the config part is at the root level
-            match config.try_deserialize::<T>() {
-                Ok(parsed_config) => {
+    config.get::<T>(section_name).map_or_else(
+        |_| {
+            config.try_deserialize::<T>().map_or_else(
+                |e| {
+                    tracing::warn!("Failed to load {} configuration: {}", section_name, e);
+                    tracing::info!("Using default {} configuration", section_name);
+                    Ok(T::default())
+                },
+                |parsed_config| {
                     tracing::info!(
                         "{} configuration loaded successfully from root",
                         section_name
                     );
                     Ok(parsed_config)
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to load {} configuration: {}", section_name, e);
-                    tracing::info!("Using default {} configuration", section_name);
-                    Ok(T::default())
-                }
-            }
-        }
-    }
+                },
+            )
+        },
+        |parsed_config| {
+            tracing::info!("{} configuration loaded successfully", section_name);
+            Ok(parsed_config)
+        },
+    )
 }
 
 /// Clear all configuration caches
@@ -1369,49 +1395,94 @@ pub fn clear_all_caches() {
     println!("All configuration caches cleared");
 }
 
-/// Convenience functions for loading specific configuration parts
+// Convenience functions for loading specific configuration parts.
 
 /// Load server configuration
+///
+/// # Errors
+///
+/// Returns a `ConfigError` if configuration files or environment variables
+/// cannot be loaded.
 pub fn load_server_config() -> Result<ServerConfig, ConfigError> {
     load_config_part::<ServerConfig>("server")
 }
 
-/// Load database configuration  
+/// Load database configuration
+///
+/// # Errors
+///
+/// Returns a `ConfigError` if configuration files or environment variables
+/// cannot be loaded.
 pub fn load_database_config() -> Result<DatabaseConfig, ConfigError> {
     load_config_part::<DatabaseConfig>("database")
 }
 
 /// Load logging configuration
+///
+/// # Errors
+///
+/// Returns a `ConfigError` if configuration files or environment variables
+/// cannot be loaded.
 pub fn load_logging_config() -> Result<LoggingConfig, ConfigError> {
     load_config_part::<LoggingConfig>("logging")
 }
 
 /// Load command configuration
+///
+/// # Errors
+///
+/// Returns a `ConfigError` if configuration files or environment variables
+/// cannot be loaded.
 pub fn load_command_config() -> Result<CommandConfig, ConfigError> {
     load_config_part::<CommandConfig>("command")
 }
 
 /// Load queue configuration
+///
+/// # Errors
+///
+/// Returns a `ConfigError` if configuration files or environment variables
+/// cannot be loaded.
 pub fn load_queue_config() -> Result<QueueConfig, ConfigError> {
     load_config_part::<QueueConfig>("queue")
 }
 
 /// Load Kafka configuration
+///
+/// # Errors
+///
+/// Returns a `ConfigError` if configuration files or environment variables
+/// cannot be loaded.
 pub fn load_kafka_config() -> Result<KafkaConfig, ConfigError> {
     load_config_part::<KafkaConfig>("kafka")
 }
 
 /// Load SQS configuration
+///
+/// # Errors
+///
+/// Returns a `ConfigError` if configuration files or environment variables
+/// cannot be loaded.
 pub fn load_sqs_config() -> Result<SqsConfig, ConfigError> {
     load_config_part::<SqsConfig>("sqs")
 }
 
 /// Load `OpenFGA` configuration
+///
+/// # Errors
+///
+/// Returns a `ConfigError` if configuration files or environment variables
+/// cannot be loaded.
 pub fn load_openfga_config() -> Result<OpenFgaClientConfig, ConfigError> {
     load_config_part::<OpenFgaClientConfig>("openfga")
 }
 
 /// Generate a default configuration file in TOML format
+///
+/// # Errors
+///
+/// Returns a `ConfigError` if the default configuration cannot be serialized
+/// to TOML.
 pub fn generate_default_config_toml<T>() -> Result<String, ConfigError>
 where
     T: ConfigLoader<T>,

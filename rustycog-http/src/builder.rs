@@ -1,7 +1,7 @@
 use crate::rustycog_command::GenericCommandService;
 use crate::rustycog_config::ServerConfig;
 use crate::rustycog_permission::{Permission, PermissionChecker};
-use axum::{middleware, Router};
+use axum::{http::HeaderName, middleware, Router};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::catch_panic::CatchPanicLayer;
@@ -104,6 +104,7 @@ impl RouteBuilder {
     }
 
     /// Add a GET route
+    #[must_use]
     pub fn get<H, T>(mut self, path: &str, handler: H) -> Self
     where
         H: axum::handler::Handler<T, AppState>,
@@ -116,6 +117,7 @@ impl RouteBuilder {
     }
 
     /// Add a POST route
+    #[must_use]
     pub fn post<H, T>(mut self, path: &str, handler: H) -> Self
     where
         H: axum::handler::Handler<T, AppState>,
@@ -128,6 +130,7 @@ impl RouteBuilder {
     }
 
     /// Add a PUT route
+    #[must_use]
     pub fn put<H, T>(mut self, path: &str, handler: H) -> Self
     where
         H: axum::handler::Handler<T, AppState>,
@@ -140,6 +143,7 @@ impl RouteBuilder {
     }
 
     /// Add a DELETE route
+    #[must_use]
     pub fn delete<H, T>(mut self, path: &str, handler: H) -> Self
     where
         H: axum::handler::Handler<T, AppState>,
@@ -152,6 +156,7 @@ impl RouteBuilder {
     }
 
     /// Add a PATCH route
+    #[must_use]
     pub fn patch<H, T>(mut self, path: &str, handler: H) -> Self
     where
         H: axum::handler::Handler<T, AppState>,
@@ -164,6 +169,7 @@ impl RouteBuilder {
     }
 
     /// Add a health check endpoint
+    #[must_use]
     pub fn health_check(mut self) -> Self {
         self.push_current();
         self.router = self
@@ -179,7 +185,12 @@ impl RouteBuilder {
         self
     }
 
-    /// Build the final router with panic handling
+    /// Build the final router with panic handling.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`X_CORRELATION_ID`] is not a valid HTTP header name. The
+    /// constant is a compile-time literal and must remain a valid header.
     pub fn into_router(mut self) -> Router
     where
         AppState: Clone + Send + Sync + 'static,
@@ -189,12 +200,20 @@ impl RouteBuilder {
 
         self.router
             .layer(CatchPanicLayer::custom(handle_panic))
-            .layer(PropagateHeaderLayer::new(X_CORRELATION_ID.parse().unwrap()))
+            .layer(PropagateHeaderLayer::new(HeaderName::from_static(
+                X_CORRELATION_ID,
+            )))
             .layer(middleware::from_fn(tracing_middleware))
             .with_state(self.state)
     }
 
     /// Build and serve the final router.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the listen address is invalid, TLS certificates
+    /// cannot be loaded, the socket cannot be bound, or the server fails while
+    /// serving.
     pub async fn build(self, config: ServerConfig) -> anyhow::Result<()>
     where
         AppState: Clone + Send + Sync + 'static,
@@ -204,6 +223,11 @@ impl RouteBuilder {
 }
 
 /// Serve an already-built Axum router using the configured HTTP/TLS listener.
+///
+/// # Errors
+///
+/// Returns an error if the listen address is invalid, TLS certificates cannot
+/// be loaded, the socket cannot be bound, or the server fails while serving.
 pub async fn serve_router(app: Router, config: ServerConfig) -> anyhow::Result<()> {
     if config.tls_enabled {
         tracing::info!(
@@ -255,6 +279,7 @@ impl RouteBuilder {
     /// The middleware extracts the deepest UUID path segment and builds a
     /// `ResourceRef` of that type, then calls
     /// `AppState.permission_checker.check(...)`.
+    #[must_use]
     pub fn with_permission_on(mut self, required: Permission, object_type: &'static str) -> Self {
         let guard = Arc::new(PermissionGuard {
             required,

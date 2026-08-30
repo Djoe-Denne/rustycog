@@ -4,23 +4,35 @@ use rustycog::logger::setup_logging;
 use std::sync::Arc;
 use tracing::debug;
 
+/// Build the service test application.
+///
+/// # Errors
+///
+/// Returns an error if the service configuration cannot be loaded or the app
+/// cannot be built.
 pub async fn build_test_app<D, T>(descriptor: Arc<D>) -> anyhow::Result<()>
 where
     D: ServiceTestDescriptor<T>,
     T: Send + Sync + 'static,
 {
-    let config = load_config_fresh::<D::Config>().expect("failed to load config");
+    let config = load_config_fresh::<D::Config>()?;
     debug!("🔄 Building test app with configuration:");
     descriptor.build_app(config, ServerConfig::default()).await
 }
 
+/// Spawn the service test HTTP server.
+///
+/// # Errors
+///
+/// Returns an error if the service configuration cannot be loaded or the
+/// server cannot be started.
 pub async fn spawn_test_server<D, T>(descriptor: Arc<D>) -> anyhow::Result<()>
 where
     D: ServiceTestDescriptor<T>,
     T: Send + Sync + 'static,
 {
     // Use your real config loading logic
-    let config = load_config_fresh::<D::Config>().expect("failed to load config");
+    let config = load_config_fresh::<D::Config>()?;
 
     // Initialize logging for the test server
     if !config.logging_config().level.is_empty() {

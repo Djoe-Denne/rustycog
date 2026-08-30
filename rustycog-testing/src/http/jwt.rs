@@ -20,13 +20,18 @@ pub fn create_jwt_token(user_id: Uuid) -> String {
 }
 
 /// Create a JWT token with a caller-provided HS256 secret
+///
+/// # Panics
+///
+/// Panics if the token cannot be encoded with HS256.
 #[must_use]
+#[allow(clippy::expect_used)]
 pub fn create_jwt_token_with_secret(user_id: Uuid, secret: &str) -> String {
     let now = Utc::now();
     let claims = TestClaims {
         sub: user_id.to_string(),
-        exp: (now + Duration::hours(1)).timestamp() as usize,
-        iat: now.timestamp() as usize,
+        exp: unix_ts_as_usize((now + Duration::hours(1)).timestamp()),
+        iat: unix_ts_as_usize(now.timestamp()),
         jti: Uuid::new_v4().to_string(),
     };
 
@@ -37,4 +42,8 @@ pub fn create_jwt_token_with_secret(user_id: Uuid, secret: &str) -> String {
         &EncodingKey::from_secret(secret.as_bytes()),
     )
     .expect("failed to encode test JWT")
+}
+
+fn unix_ts_as_usize(ts: i64) -> usize {
+    usize::try_from(ts).unwrap_or(0)
 }

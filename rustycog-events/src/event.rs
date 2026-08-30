@@ -24,7 +24,11 @@ pub trait DomainEvent: Send + Sync + std::fmt::Debug {
     /// Get the event version for schema evolution
     fn version(&self) -> u32;
 
-    /// Serialize the event to JSON
+    /// Serialize the event to JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event cannot be serialized.
     fn to_json(&self) -> Result<String, ServiceError>;
 
     /// Get event metadata

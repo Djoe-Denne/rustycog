@@ -16,6 +16,12 @@ static TEST_SERVER: OnceLock<Arc<Mutex<Option<JoinHandle<()>>>>> = OnceLock::new
 static TEST_SERVER_DESCRIPTOR_TYPE: OnceLock<Arc<Mutex<Option<TypeId>>>> = OnceLock::new();
 
 /// Get or create the global test server instance
+///
+/// # Errors
+///
+/// Returns an error if the server config cannot be loaded, the test app cannot
+/// be built, or the server does not become ready.
+#[allow(clippy::significant_drop_tightening)]
 pub async fn get_test_server<D, T>(descriptor: Arc<D>) -> Result<String, Box<dyn std::error::Error>>
 where
     D: ServiceTestDescriptor<T>,
@@ -42,13 +48,11 @@ where
     }
 
     // Check if we need to start a new server
-    let needs_new_server = match server_guard.as_ref() {
-        None => true,                         // No server handle exists
-        Some(handle) => handle.is_finished(), // Server handle exists but task is finished
-    };
+    let needs_new_server = server_guard
+        .as_ref()
+        .map_or(true, JoinHandle::is_finished);
 
-    let server_config =
-        load_config_part::<ServerConfig>("server").expect("failed to load server config");
+    let server_config = load_config_part::<ServerConfig>("server")?;
     let server_port = server_config.actual_port();
     let base_url = format!("http://{}:{}", server_config.host, server_port);
 
@@ -82,7 +86,11 @@ where
     Ok(base_url)
 }
 
-// method that return a test fixture, base_url and client
+/// Start or reuse the global test server and return its base URL plus an HTTP client.
+///
+/// # Errors
+///
+/// Returns an error if the test server cannot be started or is not ready.
 pub async fn setup_test_server<D, T>(
     descriptor: Arc<D>,
 ) -> Result<(String, Client), Box<dyn std::error::Error>>
@@ -95,7 +103,13 @@ where
     Ok((base_url, client))
 }
 
+/// Build an HTTP client that does not follow redirects.
+///
+/// # Panics
+///
+/// Panics if the reqwest client cannot be built.
 #[must_use]
+#[allow(clippy::expect_used)]
 pub fn create_test_client() -> Client {
     Client::builder()
         .redirect(reqwest::redirect::Policy::none())

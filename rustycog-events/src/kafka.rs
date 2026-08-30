@@ -20,14 +20,19 @@ pub struct KafkaEventPublisher {
 }
 
 impl KafkaEventPublisher {
-    /// Create a new Kafka event publisher from configuration
+    /// Create a new Kafka event publisher from configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Kafka producer cannot be created.
     pub async fn new(config: KafkaConfig) -> Result<Self, ServiceError> {
         let producer = Self::create_producer(&config).await?;
 
         Ok(Self { producer, config })
     }
 
-    /// Create a Kafka producer from configuration
+    /// Create a Kafka producer from configuration.
+    #[allow(clippy::unused_async)] // Public `new` is async and awaits this constructor.
     async fn create_producer(config: &KafkaConfig) -> Result<FutureProducer, ServiceError> {
         let mut client_config = ClientConfig::new();
 
@@ -95,7 +100,7 @@ impl KafkaEventPublisher {
     }
 
     /// Serialize domain event to JSON
-    fn serialize_event(&self, event: &dyn DomainEvent) -> Result<String, ServiceError> {
+    fn serialize_event(event: &dyn DomainEvent) -> Result<String, ServiceError> {
         event
             .to_json()
             .map_err(|e| ServiceError::infrastructure(format!("Failed to serialize event: {e}")))
@@ -122,7 +127,7 @@ impl EventPublisher<ServiceError> for KafkaEventPublisher {
         }
 
         let topic = self.get_topic_for_event(event);
-        let payload = self.serialize_event(event)?;
+        let payload = Self::serialize_event(event)?;
         let event_id = event.event_id().to_string();
         let aggregate_id = event.aggregate_id().to_string();
 
@@ -276,7 +281,11 @@ pub struct KafkaEventConsumer {
 }
 
 impl KafkaEventConsumer {
-    /// Create a new Kafka event consumer from configuration
+    /// Create a new Kafka event consumer from configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Kafka consumer cannot be created or subscribed.
     pub async fn new(config: KafkaConfig) -> Result<Self, ServiceError> {
         let consumer = Self::create_consumer(&config).await?;
 
@@ -287,7 +296,8 @@ impl KafkaEventConsumer {
         })
     }
 
-    /// Create a Kafka consumer from configuration
+    /// Create a Kafka consumer from configuration.
+    #[allow(clippy::unused_async)] // Public `new` is async and awaits this constructor.
     async fn create_consumer(config: &KafkaConfig) -> Result<StreamConsumer, ServiceError> {
         let mut client_config = ClientConfig::new();
 
@@ -353,7 +363,6 @@ impl KafkaEventConsumer {
 
     /// Parse Kafka message into a domain event
     fn parse_message(
-        &self,
         message: &BorrowedMessage,
     ) -> Result<Box<dyn DomainEvent>, ServiceError> {
         let payload = message.payload().ok_or_else(|| {
@@ -452,7 +461,7 @@ impl KafkaEventConsumer {
         // Poll with timeout
         match tokio::time::timeout(Duration::from_secs(30), self.consumer.recv()).await {
             Ok(Ok(message)) => {
-                match self.parse_message(&message) {
+                match Self::parse_message(&message) {
                     Ok(event) => {
                         if handler.supports_event_type(event.event_type()) {
                             if let Err(e) = handler.handle_event(event).await {

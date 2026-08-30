@@ -16,6 +16,12 @@ impl OutboxRecorder {
         Self
     }
 
+    /// Persist a domain event into the outbox table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the payload or metadata cannot be serialized, the
+    /// version does not fit in `i32`, or the insert fails.
     pub async fn record<C>(
         &self,
         connection: &C,

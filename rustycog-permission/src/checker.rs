@@ -30,6 +30,11 @@ pub struct OpenFgaPermissionChecker {
 }
 
 impl OpenFgaPermissionChecker {
+    /// Build an HTTP client for the configured OpenFGA endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the HTTP client cannot be constructed.
     pub fn new(config: OpenFgaClientConfig) -> Result<Self, DomainError> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
@@ -142,13 +147,17 @@ impl InMemoryPermissionChecker {
 
     /// Grant `action` on `resource` to `subject`.
     pub fn allow(&self, subject: Subject, action: Permission, resource: ResourceRef) {
-        let mut guard = self.tuples.write().unwrap();
+        let mut guard = self.tuples
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.insert((subject, action, resource));
     }
 
     /// Revoke `action` on `resource` from `subject`.
     pub fn deny(&self, subject: Subject, action: Permission, resource: ResourceRef) {
-        let mut guard = self.tuples.write().unwrap();
+        let mut guard = self.tuples
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(&(subject, action, resource));
     }
 }
@@ -161,7 +170,9 @@ impl PermissionChecker for InMemoryPermissionChecker {
         action: Permission,
         resource: ResourceRef,
     ) -> Result<bool, DomainError> {
-        let guard = self.tuples.read().unwrap();
+        let guard = self.tuples
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(guard.contains(&(subject, action, resource)))
     }
 }

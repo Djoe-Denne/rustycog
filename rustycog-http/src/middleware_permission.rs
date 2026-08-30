@@ -39,6 +39,12 @@ fn extract_deepest_resource_id(path: &str) -> Option<Uuid> {
 
 /// Permission-checking middleware. Rejects anonymous callers before touching
 /// the checker.
+///
+/// # Errors
+///
+/// Returns [`StatusCode::UNAUTHORIZED`] if no user is attached, or
+/// [`StatusCode::FORBIDDEN`] if the path has no resource UUID, the checker
+/// fails, or the permission is denied.
 pub async fn permission_middleware(
     State(guard): State<Arc<PermissionGuard>>,
     req: Request<Body>,
@@ -107,6 +113,11 @@ pub async fn permission_middleware(
 ///   `project:{id}#viewer@user:*` written by `sentinel-sync` for public
 ///   resources, while preserving fail-closed semantics: relations without
 ///   a wildcard tuple still return `false` and the request 403s.
+///
+/// # Errors
+///
+/// Returns [`StatusCode::FORBIDDEN`] if the checker fails or the permission
+/// is denied for the resource UUID in the path.
 pub async fn optional_permission_middleware(
     State(guard): State<Arc<PermissionGuard>>,
     req: Request<Body>,
@@ -120,15 +131,16 @@ pub async fn optional_permission_middleware(
         return Ok(next.run(req).await);
     };
 
-    let subject = if let Some(uid) = user_id {
-        Subject::new(uid)
-    } else {
-        debug!(
-            path = %request_path,
-            "optional_permission_middleware: anonymous caller, consulting checker with Subject::wildcard()"
-        );
-        Subject::wildcard()
-    };
+    let subject = user_id.map_or_else(
+        || {
+            debug!(
+                path = %request_path,
+                "optional_permission_middleware: anonymous caller, consulting checker with Subject::wildcard()"
+            );
+            Subject::wildcard()
+        },
+        Subject::new,
+    );
     let resource = ResourceRef::new(guard.object_type, resource_id);
 
     let allowed = guard

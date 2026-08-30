@@ -70,14 +70,15 @@ where
 
 /// Extract JWT token from the Authorization header
 fn extract_token(auth_header: &str) -> Option<&str> {
-    if auth_header.starts_with("Bearer ") {
-        Some(&auth_header[7..])
-    } else {
-        None
-    }
+    auth_header.strip_prefix("Bearer ")
 }
 
 /// Authentication middleware using simple user ID extractor
+///
+/// # Errors
+///
+/// Returns [`StatusCode::UNAUTHORIZED`] if the Authorization header is missing,
+/// is not a Bearer token, or user ID extraction fails.
 pub async fn auth_middleware(
     State(user_id_extractor): State<Arc<UserIdExtractor>>,
     req: Request<Body>,
@@ -121,6 +122,11 @@ pub async fn auth_middleware(
 }
 
 /// Optional authentication middleware that doesn't fail if no auth is provided
+///
+/// # Errors
+///
+/// The signature returns [`StatusCode`] for Axum middleware composition; the
+/// current implementation always continues the request (`Ok`).
 pub async fn optional_auth_middleware(
     State(user_id_extractor): State<Arc<UserIdExtractor>>,
     req: Request<Body>,

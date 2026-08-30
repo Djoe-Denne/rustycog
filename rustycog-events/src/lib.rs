@@ -46,6 +46,11 @@ pub enum ConcreteEventPublisher {
 }
 
 impl ConcreteEventPublisher {
+    /// Build a concrete publisher from the given queue configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Kafka or SQS publisher cannot be constructed.
     pub async fn new(config: &QueueConfig) -> Result<Self, ServiceError> {
         match config {
             QueueConfig::Kafka(kafka_config) => {
@@ -123,13 +128,17 @@ const fn is_test_mode() -> bool {
     cfg!(test) || cfg!(feature = "test-utils")
 }
 
-/// Factory function to create an event publisher based on queue configuration
+/// Factory function to create an event publisher based on queue configuration.
+///
+/// # Errors
+///
+/// Returns an error if the configured backend publisher cannot be created.
 pub async fn create_event_publisher_from_queue_config(
     config: &QueueConfig,
 ) -> Result<Arc<ConcreteEventPublisher>, ServiceError> {
     match config {
         QueueConfig::Kafka(kafka_config) => create_kafka_event_publisher(kafka_config).await,
-        QueueConfig::Sqs(_sqs_config) => create_sqs_event_publisher(_sqs_config).await,
+        QueueConfig::Sqs(sqs_config) => create_sqs_event_publisher(sqs_config).await,
         QueueConfig::Disabled => {
             tracing::info!("Queue disabled, using no-op event publisher");
             Ok(Arc::new(ConcreteEventPublisher::NoOp(Arc::new(
@@ -139,14 +148,22 @@ pub async fn create_event_publisher_from_queue_config(
     }
 }
 
-/// Factory function to create a Kafka event publisher based on configuration (legacy support)
+/// Factory function to create a Kafka event publisher based on configuration (legacy support).
+///
+/// # Errors
+///
+/// Returns an error if the Kafka publisher cannot be created.
 pub async fn create_event_publisher(
     config: &KafkaConfig,
 ) -> Result<Arc<ConcreteEventPublisher>, ServiceError> {
     create_kafka_event_publisher(config).await
 }
 
-/// Factory function to create a Kafka event publisher
+/// Factory function to create a Kafka event publisher.
+///
+/// # Errors
+///
+/// Returns an error if the Kafka publisher cannot be created.
 pub async fn create_kafka_event_publisher(
     config: &KafkaConfig,
 ) -> Result<Arc<ConcreteEventPublisher>, ServiceError> {
@@ -230,7 +247,11 @@ pub async fn create_kafka_event_publisher(
     }
 }
 
-/// Factory function to create an SQS event publisher
+/// Factory function to create an SQS event publisher.
+///
+/// # Errors
+///
+/// Returns an error if the SQS publisher cannot be created.
 pub async fn create_sqs_event_publisher(
     config: &SqsConfig,
 ) -> Result<Arc<ConcreteEventPublisher>, ServiceError> {
@@ -301,6 +322,13 @@ pub async fn create_sqs_event_publisher(
     }
 }
 
+/// Build a multi-queue publisher wrapping the configured backend.
+///
+/// # Errors
+///
+/// Returns an error if the underlying publisher cannot be created; the
+/// `ServiceError` is mapped through `error_mapper`.
+#[allow(clippy::implicit_hasher)] // Public API keeps `HashSet<String>` (default hasher).
 pub async fn create_multi_queue_event_publisher<TError>(
     config: &QueueConfig,
     queue_names: Option<HashSet<String>>,
@@ -409,7 +437,11 @@ impl EventConsumer for ConcreteEventConsumer {
     }
 }
 
-/// Factory function to create an event consumer based on queue configuration
+/// Factory function to create an event consumer based on queue configuration.
+///
+/// # Errors
+///
+/// Returns an error if the configured backend consumer cannot be created.
 pub async fn create_event_consumer_from_queue_config(
     config: &QueueConfig,
 ) -> Result<Arc<ConcreteEventConsumer>, ServiceError> {
@@ -425,7 +457,11 @@ pub async fn create_event_consumer_from_queue_config(
     }
 }
 
-/// Factory function to create a Kafka event consumer
+/// Factory function to create a Kafka event consumer.
+///
+/// # Errors
+///
+/// Returns an error if the Kafka consumer cannot be created.
 pub async fn create_kafka_event_consumer(
     config: &KafkaConfig,
 ) -> Result<Arc<ConcreteEventConsumer>, ServiceError> {
@@ -509,7 +545,11 @@ pub async fn create_kafka_event_consumer(
     }
 }
 
-/// Factory function to create an SQS event consumer
+/// Factory function to create an SQS event consumer.
+///
+/// # Errors
+///
+/// Returns an error if the SQS consumer cannot be created.
 pub async fn create_sqs_event_consumer(
     config: &SqsConfig,
 ) -> Result<Arc<ConcreteEventConsumer>, ServiceError> {

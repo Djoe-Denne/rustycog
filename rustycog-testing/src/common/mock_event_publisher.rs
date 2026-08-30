@@ -26,6 +26,10 @@ pub struct CapturedEvent {
 
 impl CapturedEvent {
     /// Parse the JSON data as a `serde_json::Value` for inspection
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `json_data` is not valid JSON.
     pub fn parse_json(&self) -> Result<serde_json::Value, serde_json::Error> {
         serde_json::from_str(&self.json_data)
     }
@@ -64,21 +68,28 @@ impl MockEventPublisher {
     /// Get all published events
     #[must_use]
     pub fn get_published_events(&self) -> Vec<CapturedEvent> {
-        let events = self.published_events.lock().unwrap();
-        events.clone()
+        self.published_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Get the total number of published events
     #[must_use]
     pub fn get_event_count(&self) -> usize {
-        let events = self.published_events.lock().unwrap();
-        events.len()
+        self.published_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Get events by type
     #[must_use]
     pub fn get_events_by_type(&self, event_type: &str) -> Vec<CapturedEvent> {
-        let events = self.published_events.lock().unwrap();
+        let events = self
+            .published_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         events
             .iter()
             .filter(|event| event.event_type == event_type)
@@ -89,7 +100,10 @@ impl MockEventPublisher {
     /// Check if any events of a specific type were published
     #[must_use]
     pub fn has_event_type(&self, event_type: &str) -> bool {
-        let events = self.published_events.lock().unwrap();
+        let events = self
+            .published_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         events.iter().any(|event| event.event_type == event_type)
     }
 
@@ -136,8 +150,10 @@ impl MockEventPublisher {
 
     /// Clear all captured events (useful for test setup)
     pub fn clear_events(&self) {
-        let mut events = self.published_events.lock().unwrap();
-        events.clear();
+        self.published_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     /// Wait until at least `expected_count` events have been captured.
@@ -203,16 +219,18 @@ impl EventPublisher<ServiceError> for MockEventPublisher {
             metadata: event.metadata(),
         };
 
-        let mut events = self.published_events.lock().unwrap();
-        events.push(captured_event);
+        self.published_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(captured_event);
         Ok(())
     }
 
     async fn publish_batch(&self, events: &[Box<dyn DomainEvent>]) -> Result<(), ServiceError> {
-        // Capture all events for test verification
-        let mut stored_events = self.published_events.lock().unwrap();
+        // Capture all events for test verification, then lock only to store them.
+        let mut captured = Vec::with_capacity(events.len());
         for event in events {
-            let captured_event = CapturedEvent {
+            captured.push(CapturedEvent {
                 event_type: event.event_type().to_string(),
                 event_id: event.event_id(),
                 aggregate_id: event.aggregate_id(),
@@ -220,9 +238,12 @@ impl EventPublisher<ServiceError> for MockEventPublisher {
                 version: event.version(),
                 json_data: event.to_json()?,
                 metadata: event.metadata(),
-            };
-            stored_events.push(captured_event);
+            });
         }
+        self.published_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(captured);
         Ok(())
     }
 

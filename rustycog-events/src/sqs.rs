@@ -23,7 +23,11 @@ pub struct SqsEventPublisher {
 }
 
 impl SqsEventPublisher {
-    /// Create a new SQS event publisher from configuration
+    /// Create a new SQS event publisher from configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the AWS SQS client cannot be built from `config`.
     pub async fn new(config: SqsConfig) -> Result<Self, ServiceError> {
         let client = Self::create_client(&config).await?;
 
@@ -64,7 +68,7 @@ impl SqsEventPublisher {
     }
 
     /// Serialize domain event to SQS message body
-    fn serialize_event(&self, event: &dyn DomainEvent) -> Result<String, ServiceError> {
+    fn serialize_event(event: &dyn DomainEvent) -> Result<String, ServiceError> {
         // Get the event JSON and parse it back to a Value so it's properly structured in the data field
         let event_json_str = event.to_json()?;
         let event_data: serde_json::Value = serde_json::from_str(&event_json_str).map_err(|e| {
@@ -104,7 +108,6 @@ impl SqsEventPublisher {
 
     /// Create message attributes for the event
     fn create_message_attributes(
-        &self,
         event: &dyn DomainEvent,
     ) -> std::collections::HashMap<String, aws_sdk_sqs::types::MessageAttributeValue> {
         let mut attributes = std::collections::HashMap::new();
@@ -115,7 +118,7 @@ impl SqsEventPublisher {
                 .data_type("String")
                 .string_value(event.event_id().to_string())
                 .build()
-                .unwrap(),
+                .expect("MessageAttributeValue builder: data_type and string_value are set"),
         );
 
         attributes.insert(
@@ -124,7 +127,7 @@ impl SqsEventPublisher {
                 .data_type("String")
                 .string_value(event.event_type())
                 .build()
-                .unwrap(),
+                .expect("MessageAttributeValue builder: data_type and string_value are set"),
         );
 
         attributes.insert(
@@ -133,7 +136,7 @@ impl SqsEventPublisher {
                 .data_type("String")
                 .string_value(event.aggregate_id().to_string())
                 .build()
-                .unwrap(),
+                .expect("MessageAttributeValue builder: data_type and string_value are set"),
         );
 
         attributes.insert(
@@ -142,7 +145,7 @@ impl SqsEventPublisher {
                 .data_type("String")
                 .string_value("rustycog-events")
                 .build()
-                .unwrap(),
+                .expect("MessageAttributeValue builder: data_type and string_value are set"),
         );
 
         attributes
@@ -173,8 +176,8 @@ impl SqsEventPublisher {
         entries_by_queue: &mut SqsBatchEntriesByQueue,
     ) -> Result<(), ServiceError> {
         let queue_names = self.get_queue_names_for_event(event)?;
-        let message_body = self.serialize_event(event)?;
-        let message_attributes = self.create_message_attributes(event);
+        let message_body = Self::serialize_event(event)?;
+        let message_attributes = Self::create_message_attributes(event);
 
         for (queue_idx, queue_name) in queue_names.into_iter().enumerate() {
             let entry = self.build_batch_entry(
@@ -261,7 +264,7 @@ impl SqsEventPublisher {
             .send()
             .await
         {
-            Ok(response) => self.log_batch_response(queue_name, queue_url, response),
+            Ok(response) => Self::log_batch_response(queue_name, queue_url, &response),
             Err(aws_error) => {
                 error!(
                     queue_name = %queue_name,
@@ -277,10 +280,9 @@ impl SqsEventPublisher {
     }
 
     fn log_batch_response(
-        &self,
         queue_name: &str,
         queue_url: &str,
-        response: aws_sdk_sqs::operation::send_message_batch::SendMessageBatchOutput,
+        response: &aws_sdk_sqs::operation::send_message_batch::SendMessageBatchOutput,
     ) -> Option<ServiceError> {
         let failed = response.failed();
         if !failed.is_empty() {
@@ -322,8 +324,8 @@ impl EventPublisher<ServiceError> for SqsEventPublisher {
         }
 
         let queue_names = self.get_queue_names_for_event(event)?;
-        let message_body = self.serialize_event(event)?;
-        let message_attributes = self.create_message_attributes(event);
+        let message_body = Self::serialize_event(event)?;
+        let message_attributes = Self::create_message_attributes(event);
 
         let mut first_error = None;
         for queue_name in queue_names {
@@ -383,10 +385,7 @@ impl EventPublisher<ServiceError> for SqsEventPublisher {
             }
         }
 
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        first_error.map_or(Ok(()), Err)
     }
 
     async fn publish_batch(&self, events: &[Box<dyn DomainEvent>]) -> Result<(), ServiceError> {
@@ -411,12 +410,13 @@ impl EventPublisher<ServiceError> for SqsEventPublisher {
         let send_error = self.send_batch_entries(entries_by_queue).await;
         let first_error = build_error.or(send_error);
 
-        if let Some(error) = first_error {
-            Err(error)
-        } else {
-            info!("Successfully published all events in batch");
-            Ok(())
-        }
+        first_error.map_or_else(
+            || {
+                info!("Successfully published all events in batch");
+                Ok(())
+            },
+            Err,
+        )
     }
 
     async fn health_check(&self) -> Result<(), ServiceError> {
@@ -467,7 +467,11 @@ pub struct SqsEventConsumer {
 }
 
 impl SqsEventConsumer {
-    /// Create a new SQS event consumer from configuration
+    /// Create a new SQS event consumer from configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the AWS SQS client cannot be built from `config`.
     pub async fn new(config: SqsConfig) -> Result<Self, ServiceError> {
         let client = SqsEventPublisher::create_client(&config).await?;
 
@@ -519,8 +523,9 @@ impl SqsEventConsumer {
 
         let version = message
             .get("version")
-            .and_then(serde_json::Value::as_i64)
-            .unwrap_or(1) as i32;
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(1);
 
         let data = message.get("data").ok_or_else(|| {
             ServiceError::infrastructure("Missing data in SQS message".to_string())
@@ -769,7 +774,7 @@ struct GenericDomainEvent {
     event_type: String,
     aggregate_id: String,
     occurred_at: String,
-    version: i32,
+    version: u32,
     data: Value,
     metadata: serde_json::Map<String, Value>,
 }
@@ -793,7 +798,7 @@ impl DomainEvent for GenericDomainEvent {
     }
 
     fn version(&self) -> u32 {
-        self.version as u32
+        self.version
     }
 
     fn to_json(&self) -> Result<String, ServiceError> {

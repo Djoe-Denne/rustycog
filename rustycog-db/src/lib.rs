@@ -33,7 +33,11 @@ impl Clone for DbConnectionPool {
 }
 
 impl DbConnectionPool {
-    /// Create a new connection pool with the given database configuration
+    /// Create a new connection pool with the given database configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the primary database connection cannot be opened.
     pub async fn new(db_config: &DatabaseConfig) -> Result<Self, DbErr> {
         let db_url = db_config.url();
 
@@ -93,7 +97,11 @@ impl DbConnectionPool {
         })
     }
 
-    /// Create a new connection pool with the given database URL (for backward compatibility)
+    /// Create a new connection pool with the given database URL (for backward compatibility).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the URL cannot be parsed or the pool cannot be created.
     pub async fn new_from_url(db_url: &str, read_replicas: Vec<String>) -> Result<Self, DbErr> {
         // Parse the URL to create a DatabaseConfig
         let db_config = DatabaseConfig::from_url(db_url)
@@ -115,6 +123,10 @@ impl DbConnectionPool {
     /// Transactional workflows must use the primary connection so reads and
     /// writes participate in the same committed unit instead of crossing read
     /// replicas that may lag behind the write.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a transaction cannot be started on the write connection.
     pub async fn begin_write_transaction(&self) -> Result<DatabaseTransaction, DbErr> {
         self.write_connection.begin().await
     }

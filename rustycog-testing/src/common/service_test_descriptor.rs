@@ -52,15 +52,15 @@ pub trait ServiceTestDescriptor<T>: Send + Sync + 'static {
     /// service is forced to think about authorization wiring.
     fn has_openfga(&self) -> bool;
 
-    /// Authorization model payload used by the OpenFGA testcontainer when
+    /// Authorization model payload used by the `OpenFGA` testcontainer when
     /// [`Self::has_openfga`] returns `true`.
     ///
-    /// Should return the full JSON body accepted by OpenFGA's
-    /// `WriteAuthorizationModel` endpoint (`{schema_version, type_definitions}`).
+    /// Should return the full JSON body accepted by `OpenFGA`'s
+    /// `WriteAuthorizationModel` endpoint (`schema_version`, `type_definitions`).
     /// Typical implementation uses `Some(include_str!("../../openfga/model.json"))`
     /// in each service test descriptor.
     ///
-    /// Defaults to `None` so descriptors that do not use OpenFGA do not need
+    /// Defaults to `None` so descriptors that do not use `OpenFGA` do not need
     /// boilerplate.
     fn openfga_authorization_model_json(&self) -> Option<&'static str> {
         None

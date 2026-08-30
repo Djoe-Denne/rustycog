@@ -55,7 +55,7 @@ impl DomainEvent for StoredOutboxEvent {
     }
 
     fn version(&self) -> u32 {
-        self.version as u32
+        u32::try_from(self.version).unwrap_or(0)
     }
 
     fn to_json(&self) -> Result<String, ServiceError> {

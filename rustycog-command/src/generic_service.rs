@@ -14,6 +14,11 @@ impl GenericCommandService {
     }
 
     /// Execute any command that's registered in the registry
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError`] if validation fails, no handler is registered,
+    /// or execution fails (including after retries).
     pub async fn execute<C: Command + Clone + 'static>(
         &self,
         command: C,

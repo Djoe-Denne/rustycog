@@ -20,20 +20,21 @@ pub async fn tracing_middleware(mut request: Request, next: Next) -> Response {
     let start_time = Instant::now();
 
     // Extract or generate correlation ID
-    let correlation_id = if let Some(id) = request
+    let correlation_id = request
         .headers()
         .get(X_CORRELATION_ID)
         .and_then(|v| v.to_str().ok())
-    {
-        id.to_string()
-    } else {
-        let id = Uuid::new_v4().to_string();
-        // UUID string is ASCII and valid as an HTTP header value
-        if let Ok(header_value) = HeaderValue::try_from(id.as_str()) {
-            request.headers_mut().insert(X_CORRELATION_ID, header_value);
-        }
-        id
-    };
+        .map_or_else(
+            || {
+                let id = Uuid::new_v4().to_string();
+                // UUID string is ASCII and valid as an HTTP header value
+                if let Ok(header_value) = HeaderValue::try_from(id.as_str()) {
+                    request.headers_mut().insert(X_CORRELATION_ID, header_value);
+                }
+                id
+            },
+            ToString::to_string,
+        );
 
     // Extract request ID if present
     let request_id = request
@@ -54,51 +55,60 @@ pub async fn tracing_middleware(mut request: Request, next: Next) -> Response {
     let path = uri.path();
 
     // Create a span with all available information
-    let span = if let Some(req_id) = &request_id {
-        if let Some(uid) = &user_id {
-            info_span!(
-                "http_request",
-                %method,
-                %path,
-                %correlation_id,
-                request_id = %req_id,
-                user_id = %uid,
-                response_time_ms = tracing::field::Empty,
-                status_code = tracing::field::Empty,
+    let span = request_id.as_ref().map_or_else(
+        || {
+            user_id.as_ref().map_or_else(
+                || {
+                    info_span!(
+                        "http_request",
+                        %method,
+                        %path,
+                        %correlation_id,
+                        response_time_ms = tracing::field::Empty,
+                        status_code = tracing::field::Empty,
+                    )
+                },
+                |uid| {
+                    info_span!(
+                        "http_request",
+                        %method,
+                        %path,
+                        %correlation_id,
+                        user_id = %uid,
+                        response_time_ms = tracing::field::Empty,
+                        status_code = tracing::field::Empty,
+                    )
+                },
             )
-        } else {
-            info_span!(
-                "http_request",
-                %method,
-                %path,
-                %correlation_id,
-                request_id = %req_id,
-                response_time_ms = tracing::field::Empty,
-                status_code = tracing::field::Empty,
+        },
+        |req_id| {
+            user_id.as_ref().map_or_else(
+                || {
+                    info_span!(
+                        "http_request",
+                        %method,
+                        %path,
+                        %correlation_id,
+                        request_id = %req_id,
+                        response_time_ms = tracing::field::Empty,
+                        status_code = tracing::field::Empty,
+                    )
+                },
+                |uid| {
+                    info_span!(
+                        "http_request",
+                        %method,
+                        %path,
+                        %correlation_id,
+                        request_id = %req_id,
+                        user_id = %uid,
+                        response_time_ms = tracing::field::Empty,
+                        status_code = tracing::field::Empty,
+                    )
+                },
             )
-        }
-    } else {
-        if let Some(uid) = &user_id {
-            info_span!(
-                "http_request",
-                %method,
-                %path,
-                %correlation_id,
-                user_id = %uid,
-                response_time_ms = tracing::field::Empty,
-                status_code = tracing::field::Empty,
-            )
-        } else {
-            info_span!(
-                "http_request",
-                %method,
-                %path,
-                %correlation_id,
-                response_time_ms = tracing::field::Empty,
-                status_code = tracing::field::Empty,
-            )
-        }
-    };
+        },
+    );
 
     // Process the request within the span
     let response = next.run(request).instrument(span.clone()).await;

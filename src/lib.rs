@@ -1,4 +1,4 @@
-//! RustyCog feature-gated framework crate.
+//! `RustyCog` feature-gated framework crate.
 //!
 //! This crate consolidates the historical `rustycog-*` crates under a single
 //! package while preserving module boundaries via Cargo features.

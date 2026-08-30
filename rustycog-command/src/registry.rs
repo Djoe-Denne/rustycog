@@ -7,6 +7,17 @@ use std::time::{Duration, Instant};
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 
+fn duration_as_millis_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn saturate_mul_duration(duration: Duration, factor: f64) -> Duration {
+    if !factor.is_finite() || factor <= 0.0 {
+        return Duration::ZERO;
+    }
+    Duration::try_from_secs_f64(duration.as_secs_f64() * factor).unwrap_or(Duration::MAX)
+}
+
 /// Retry policy configuration
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
@@ -32,10 +43,9 @@ impl Default for RetryPolicy {
 impl RetryPolicy {
     #[must_use]
     pub fn calculate_delay(&self, attempt: u32) -> Duration {
-        let base_delay_ms = self.base_delay.as_millis() as f64;
-        let exponential_delay = base_delay_ms * self.backoff_multiplier.powi(attempt as i32);
-
-        let mut delay = Duration::from_millis(exponential_delay as u64);
+        let exponent = i32::try_from(attempt).unwrap_or(i32::MAX);
+        let factor = self.backoff_multiplier.powi(exponent);
+        let mut delay = saturate_mul_duration(self.base_delay, factor);
         if delay > self.max_delay {
             delay = self.max_delay;
         }
@@ -50,7 +60,10 @@ impl RetryPolicy {
             );
             let jitter = (time_nanos / 1_000_000_000.0 - 0.5) * 0.1; // ±5% jitter
             let jitter_factor = 1.0 + jitter;
-            delay = Duration::from_millis((delay.as_millis() as f64 * jitter_factor) as u64);
+            delay = saturate_mul_duration(delay, jitter_factor);
+            if delay > self.max_delay {
+                delay = self.max_delay;
+            }
         }
 
         delay
@@ -281,6 +294,11 @@ impl CommandRegistry {
     }
 
     /// Execute a command through the registry with full cross-cutting concerns
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError`] if validation fails, no handler is registered
+    /// for the command type, or execution fails (including after retries).
     pub async fn execute_command<C: Command + Clone + 'static>(
         &self,
         command: C,
@@ -386,7 +404,7 @@ impl CommandRegistry {
         if self.config.enable_tracing {
             info!(
                 command_type = %command_type,
-                duration_ms = duration.as_millis() as u64,
+                duration_ms = duration_as_millis_u64(duration),
                 retry_attempts = retry_attempts,
                 "Command executed successfully"
             );
@@ -487,7 +505,7 @@ impl CommandRegistry {
             error!(
                 command_type = %command_type,
                 error = %error,
-                duration_ms = duration.as_millis() as u64,
+                duration_ms = duration_as_millis_u64(duration),
                 retry_attempts = retry_attempts,
                 "{message}"
             );
@@ -515,14 +533,14 @@ impl CommandRegistry {
                 command_type = %command_type,
                 error = %error,
                 retry_attempt = retry_attempts,
-                delay_ms = delay.as_millis() as u64,
+                delay_ms = duration_as_millis_u64(delay),
                 "Command failed, retrying"
             );
         } else {
             warn!(
                 command_type = %command_type,
                 retry_attempt = retry_attempts,
-                delay_ms = delay.as_millis() as u64,
+                delay_ms = duration_as_millis_u64(delay),
                 "Command timed out, retrying"
             );
         }
@@ -552,7 +570,7 @@ impl CommandRegistry {
     ) {
         let metrics = CommandMetrics {
             command_type: command.command_type().to_string(),
-            duration_ms: duration.as_millis() as u64,
+            duration_ms: duration_as_millis_u64(duration),
             success: true,
             retry_attempts,
             error_type: None,
@@ -571,7 +589,7 @@ impl CommandRegistry {
         let duration = start_time.elapsed();
         let metrics = CommandMetrics {
             command_type: command.command_type().to_string(),
-            duration_ms: duration.as_millis() as u64,
+            duration_ms: duration_as_millis_u64(duration),
             success: false,
             retry_attempts,
             error_type: Some(format!("{error:?}")),
@@ -626,6 +644,7 @@ impl CommandRegistryBuilder {
     }
 
     /// Register a command handler with error mapper
+    #[must_use]
     pub fn register<C, H>(
         mut self,
         command_type: String,

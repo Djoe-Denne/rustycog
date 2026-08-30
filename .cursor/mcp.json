@@ -1,0 +1,15 @@
+﻿{
+  "mcpServers": {
+    "context-mode": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": [
+        "C:\\Users\\djden\\AppData\\Roaming\\npm\\node_modules\\context-mode\\start.mjs"
+      ],
+      "env": {
+        "CONTEXT_MODE_PLATFORM": "cursor",
+        "CONTEXT_MODE_PROJECT_DIR": "C:\\Users\\djden\\source\\repos\\rustycog",
+        "PATH": "C:\\Program Files\\nodejs;C:\\Users\\djden\\AppData\\Roaming\\npm;${env:PATH}"
+      }
+    }
+  }
+}

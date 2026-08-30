@@ -28,15 +28,17 @@ pub async fn health_check() -> &'static str {
     "OK"
 }
 
-/// Handle panic in middleware
+/// Handle panic in middleware.
+///
+/// `err` is taken by value because [`tower_http::catch_panic::CatchPanicLayer`]
+/// delivers ownership of the panic payload.
+#[allow(clippy::needless_pass_by_value)]
 pub fn handle_panic(err: Box<dyn std::any::Any + Send + 'static>) -> axum::response::Response {
-    let details = if let Some(s) = err.downcast_ref::<String>() {
-        s.clone()
-    } else if let Some(s) = err.downcast_ref::<&str>() {
-        s.to_string()
-    } else {
-        "Unknown panic".to_string()
-    };
+    let details = err
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| err.downcast_ref::<&str>().map(|s| (*s).to_string()))
+        .unwrap_or_else(|| "Unknown panic".to_string());
 
     tracing::error!("Service panicked: {}", details);
 

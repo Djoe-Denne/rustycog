@@ -61,6 +61,12 @@ pub struct TestSqs {
 
 impl TestSqs {
     /// Get or create the global test SQS instance
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the LocalStack container cannot be started, the SQS
+    /// client cannot be created, LocalStack is not ready, or test queues cannot
+    /// be created.
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let (_container, sqs_config) = get_or_create_test_sqs_container().await?;
         let host = sqs_config.host.clone();
@@ -70,16 +76,16 @@ impl TestSqs {
         // Parse the endpoint URL to get host and port
         let endpoint_url = sqs_config
             .endpoint_url()
-            .unwrap_or("http://localhost:4566".to_string());
+            .unwrap_or_else(|| "http://localhost:4566".to_string());
 
         let access_key_id = sqs_config
             .access_key_id
             .clone()
-            .unwrap_or("test".to_string());
+            .unwrap_or_else(|| "test".to_string());
         let secret_access_key = sqs_config
             .secret_access_key
             .clone()
-            .unwrap_or("test".to_string());
+            .unwrap_or_else(|| "test".to_string());
         let account_id = sqs_config.account_id.clone();
 
         // Set environment variables for SQS configuration so our app config picks it up
@@ -222,6 +228,10 @@ impl TestSqs {
     }
 
     /// Send a test message to the queue (raw string)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQS send request fails.
     pub async fn send_message(
         &self,
         message_body: &str,
@@ -231,6 +241,10 @@ impl TestSqs {
     }
 
     /// Send a test message to a named queue (raw string)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the named queue is unknown or the SQS send request fails.
     pub async fn send_message_to_queue(
         &self,
         queue_name: &str,
@@ -266,27 +280,35 @@ impl TestSqs {
     }
 
     /// Send a domain event to the queue (formatted like the SQS publisher)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event cannot be serialized or the SQS send request fails.
     pub async fn send_event(
         &self,
         event: &dyn DomainEvent,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let message_body = self.serialize_event(event)?;
+        let message_body = Self::serialize_event(event)?;
         self.send_message(&message_body).await
     }
 
     /// Send a domain event to a named queue (formatted like the SQS publisher)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event cannot be serialized, the named queue is
+    /// unknown, or the SQS send request fails.
     pub async fn send_event_to_queue(
         &self,
         queue_name: &str,
         event: &dyn DomainEvent,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let message_body = self.serialize_event(event)?;
+        let message_body = Self::serialize_event(event)?;
         self.send_message_to_queue(queue_name, &message_body).await
     }
 
     /// Serialize domain event to SQS message body (same as SQS publisher)
     fn serialize_event(
-        &self,
         event: &dyn DomainEvent,
     ) -> Result<String, Box<dyn std::error::Error>> {
         // Get the event JSON and parse it back to a Value so it's properly structured in the data field
@@ -311,6 +333,10 @@ impl TestSqs {
     }
 
     /// Receive messages from the queue
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQS receive request fails.
     pub async fn receive_messages(
         &self,
         max_messages: i32,
@@ -321,6 +347,10 @@ impl TestSqs {
     }
 
     /// Receive messages from a named queue
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the named queue is unknown or the SQS receive request fails.
     pub async fn receive_messages_from_queue(
         &self,
         queue_name: &str,
@@ -359,6 +389,10 @@ impl TestSqs {
     }
 
     /// Delete a message from the queue
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQS delete request fails.
     pub async fn delete_message(
         &self,
         receipt_handle: &str,
@@ -386,6 +420,10 @@ impl TestSqs {
     }
 
     /// Get all messages from the queue (non-destructive polling)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if polling the queue fails.
     pub async fn get_all_messages(
         &self,
         max_wait_secs: u64,
@@ -395,6 +433,10 @@ impl TestSqs {
     }
 
     /// Get all messages from a named queue (non-destructive polling)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the named queue is unknown or polling the queue fails.
     pub async fn get_all_messages_from_queue(
         &self,
         queue_name: &str,
@@ -454,6 +496,11 @@ impl TestSqs {
     }
 
     /// Wait for a specific number of messages to be available
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if polling the queue fails or the expected number of
+    /// messages is not received within `max_wait_secs`.
     pub async fn wait_for_messages(
         &self,
         expected_count: usize,
@@ -464,6 +511,11 @@ impl TestSqs {
     }
 
     /// Wait for a specific number of messages to be available on a named queue
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the named queue is unknown, polling fails, or the
+    /// expected number of messages is not received within `max_wait_secs`.
     pub async fn wait_for_messages_from_queue(
         &self,
         queue_name: &str,
@@ -553,11 +605,19 @@ impl TestSqs {
     }
 
     /// Purge all messages from the queue
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQS purge request fails.
     pub async fn purge_queue(&self) -> Result<(), Box<dyn std::error::Error>> {
         self.purge_queue_url(&self.queue_url).await
     }
 
     /// Purge all messages from a named queue
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the named queue is unknown or the SQS purge request fails.
     pub async fn purge_queue_named(
         &self,
         queue_name: &str,
@@ -584,6 +644,7 @@ impl TestSqs {
 }
 
 /// Get or create the global test SQS container
+#[allow(clippy::significant_drop_tightening)] // Mutex held for the whole init to avoid a second LocalStack start.
 async fn get_or_create_test_sqs_container(
 ) -> Result<(Arc<TestSqsContainer>, SqsConfig), Box<dyn std::error::Error>> {
     let container_mutex = TEST_SQS_CONTAINER.get_or_init(|| Arc::new(Mutex::new(None)));
@@ -593,7 +654,7 @@ async fn get_or_create_test_sqs_container(
     if let Some(ref container) = *container_guard {
         // If container exists, we still need to load the config to return it
         let queue_config =
-            load_config_part::<QueueConfig>("queue").expect("failed to load queue config");
+            load_config_part::<QueueConfig>("queue")?;
         let sqs_config = match &queue_config {
             QueueConfig::Sqs(sqs_config) => sqs_config.clone(),
             QueueConfig::Kafka(_) => {
@@ -609,14 +670,14 @@ async fn get_or_create_test_sqs_container(
     info!("Creating new SQS LocalStack test container");
 
     // Clean up any existing container
-    cleanup_existing_sqs_container().await;
+    cleanup_existing_sqs_container();
 
     // Clear only the SQS port cache to ensure fresh random port generation
     SqsConfig::clear_port_cache();
 
     // Load configuration to understand SQS settings
     let queue_config =
-        load_config_part::<QueueConfig>("queue").expect("failed to load queue config");
+        load_config_part::<QueueConfig>("queue")?;
     let sqs_config = match &queue_config {
         QueueConfig::Sqs(sqs_config) => sqs_config.clone(),
         QueueConfig::Kafka(_) => {
@@ -658,13 +719,13 @@ async fn get_or_create_test_sqs_container(
     *container_guard = Some(test_container.clone());
 
     // Register cleanup handler on first container creation
-    register_sqs_cleanup_handler().await;
+    register_sqs_cleanup_handler();
 
     Ok((test_container, sqs_config))
 }
 
 /// Clean up any existing SQS containers
-async fn cleanup_existing_sqs_container() {
+fn cleanup_existing_sqs_container() {
     use std::process::Command;
 
     debug!("Checking for existing SQS LocalStack test containers");
@@ -687,7 +748,7 @@ async fn cleanup_existing_sqs_container() {
 }
 
 /// Register cleanup handler for SQS containers
-async fn register_sqs_cleanup_handler() {
+fn register_sqs_cleanup_handler() {
     if SQS_CLEANUP_REGISTERED.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -702,12 +763,21 @@ pub struct TestSqsFixture {
 
 impl TestSqsFixture {
     /// Create a new SQS test fixture
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shared SQS test instance cannot be created.
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let sqs = TestSqs::new().await?;
         Ok(Self { sqs })
     }
 
     /// Wait for and verify a specific event was published
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if messages cannot be read or no event of the given type
+    /// appears within `timeout_secs`.
     pub async fn verify_event_published(
         &self,
         event_type: &str,
@@ -732,6 +802,10 @@ impl TestSqsFixture {
     }
 
     /// Send a test event to the queue
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event cannot be serialized or the SQS send request fails.
     pub async fn send_test_event(
         &self,
         event_type: &str,
@@ -752,6 +826,11 @@ impl TestSqsFixture {
     }
 
     /// Cleanup SQS container (for test cleanup)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if cleanup cannot complete. The current implementation
+    /// always returns `Ok(())` after a best-effort shutdown.
     pub async fn cleanup_container() -> Result<(), Box<dyn std::error::Error>> {
         let container_mutex = TEST_SQS_CONTAINER.get();
         if let Some(container_mutex) = container_mutex {
@@ -765,7 +844,7 @@ impl TestSqsFixture {
                 } else {
                     warn!("Could not cleanup SQS container: still has references");
                     // Fallback cleanup using Docker commands
-                    cleanup_existing_sqs_container().await;
+                    cleanup_existing_sqs_container();
                 }
             }
         }

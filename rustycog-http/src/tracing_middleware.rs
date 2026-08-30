@@ -19,22 +19,21 @@ pub const X_CORRELATION_ID: &str = "x-correlation-id";
 pub async fn tracing_middleware(mut request: Request, next: Next) -> Response {
     let start_time = Instant::now();
 
-    // Extract or generate correlation ID
-    let correlation_id = request
+    // Clone the header first so the immutable borrow ends before headers_mut().
+    let existing_correlation_id = request
         .headers()
         .get(X_CORRELATION_ID)
         .and_then(|v| v.to_str().ok())
-        .map_or_else(
-            || {
-                let id = Uuid::new_v4().to_string();
-                // UUID string is ASCII and valid as an HTTP header value
-                if let Ok(header_value) = HeaderValue::try_from(id.as_str()) {
-                    request.headers_mut().insert(X_CORRELATION_ID, header_value);
-                }
-                id
-            },
-            ToString::to_string,
-        );
+        .map(ToString::to_string);
+
+    let correlation_id = existing_correlation_id.unwrap_or_else(|| {
+        let id = Uuid::new_v4().to_string();
+        // UUID string is ASCII and valid as an HTTP header value
+        if let Ok(header_value) = HeaderValue::try_from(id.as_str()) {
+            request.headers_mut().insert(X_CORRELATION_ID, header_value);
+        }
+        id
+    });
 
     // Extract request ID if present
     let request_id = request

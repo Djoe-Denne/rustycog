@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-use rustycog_core::error::DomainError;
-use rustycog_http::{AppState, AuthUser, RouteBuilder, UserIdExtractor};
-use rustycog_permission::{
+use rustycog_framework::core::error::DomainError;
+use rustycog_framework::http::{AppState, AuthUser, RouteBuilder, UserIdExtractor};
+use rustycog_framework::permission::{
     InMemoryPermissionChecker, Permission, PermissionChecker, ResourceId, ResourceRef, Subject,
 };
 use serde::Serialize;
@@ -71,10 +71,10 @@ async fn ok_handler_one_level_optional_auth(
 async fn make_server(
     checker: Arc<InMemoryPermissionChecker>,
 ) -> (SocketAddr, tokio::task::JoinHandle<Result<(), DomainError>>) {
-    let registry = Arc::new(rustycog_command::CommandRegistry::default());
+    let registry = Arc::new(rustycog_framework::command::CommandRegistry::default());
     let extractor = UserIdExtractor::from_resolved_secret(TEST_JWT_SECRET).unwrap();
     let state = AppState::new(
-        Arc::new(rustycog_command::GenericCommandService::new(registry)),
+        Arc::new(rustycog_framework::command::GenericCommandService::new(registry)),
         extractor,
         checker as Arc<dyn PermissionChecker>,
     );
@@ -110,7 +110,13 @@ async fn make_server(
             )
             .might_be_authenticated()
             .with_permission_on(Permission::Read, "organization")
-            .build(rustycog_config::ServerConfig {
+            .get(
+                "/named/orgs/{org_id}/members/{member_id}",
+                ok_handler_two_level,
+            )
+            .authenticated()
+            .with_permission_on_param(Permission::Write, "organization", "org_id")
+            .build(rustycog_framework::config::ServerConfig {
                 host: "127.0.0.1".into(),
                 port: addr.port(),
                 tls_enabled: false,
@@ -252,6 +258,48 @@ mod two_level {
         )
         .await;
         assert_eq!(res.status(), reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn named_param_checks_org_not_member() {
+        let user = Uuid::new_v4();
+        let org = Uuid::new_v4();
+        let member = Uuid::new_v4();
+        let checker = Arc::new(InMemoryPermissionChecker::new());
+        checker.allow(
+            Subject::new(user),
+            Permission::Write,
+            ResourceRef::new("organization", org),
+        );
+        let (addr, _h) = make_server(checker).await;
+        let res = http_get(
+            addr,
+            format!("/named/orgs/{org}/members/{member}").as_str(),
+            Some(user),
+        )
+        .await;
+        assert_eq!(res.status(), reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn named_param_denies_when_only_trailing_uuid_is_granted() {
+        let user = Uuid::new_v4();
+        let org = Uuid::new_v4();
+        let member = Uuid::new_v4();
+        let checker = Arc::new(InMemoryPermissionChecker::new());
+        checker.allow(
+            Subject::new(user),
+            Permission::Write,
+            ResourceRef::new("organization", member),
+        );
+        let (addr, _h) = make_server(checker).await;
+        let res = http_get(
+            addr,
+            format!("/named/orgs/{org}/members/{member}").as_str(),
+            Some(user),
+        )
+        .await;
+        assert_eq!(res.status(), reqwest::StatusCode::FORBIDDEN);
     }
 }
 

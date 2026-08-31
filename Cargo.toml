@@ -226,6 +226,11 @@ uuid = { version = "1", features = ["serde", "v4"], optional = true }
 validator = { version = "0.20", features = ["derive"], optional = true }
 wiremock = { version = "0.6", optional = true }
 
+[[test]]
+name = "permission_middleware"
+path = "rustycog-http/tests/permission_middleware_tests.rs"
+required-features = ["http"]
+
 [dev-dependencies]
 claims = "0.8"
 mockall = "0.13"

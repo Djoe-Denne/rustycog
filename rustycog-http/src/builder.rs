@@ -279,13 +279,45 @@ impl RouteBuilder {
     /// The middleware extracts the deepest UUID path segment and builds a
     /// `ResourceRef` of that type, then calls
     /// `AppState.permission_checker.check(...)`.
+    ///
+    /// For nested routes whose last UUID is not the object you want to check
+    /// (e.g. `/orgs/{organization_id}/members/{user_id}` typed as
+    /// `"organization"`), use [`Self::with_permission_on_param`].
     #[must_use]
-    pub fn with_permission_on(mut self, required: Permission, object_type: &'static str) -> Self {
-        let guard = Arc::new(PermissionGuard {
+    pub fn with_permission_on(self, required: Permission, object_type: &'static str) -> Self {
+        let guard = PermissionGuard {
             required,
             object_type,
             checker: self.state.permission_checker.clone(),
-        });
+            path_template: None,
+            resource_param: None,
+        };
+        self.attach_permission_guard(guard)
+    }
+
+    /// Like [`Self::with_permission_on`], but binds the OpenFGA object id from
+    /// a named path parameter on the current route template.
+    ///
+    /// Fail-closed (403) when the parameter is missing or not a UUID.
+    #[must_use]
+    pub fn with_permission_on_param(
+        self,
+        required: Permission,
+        object_type: &'static str,
+        resource_param: &'static str,
+    ) -> Self {
+        let guard = PermissionGuard {
+            required,
+            object_type,
+            checker: self.state.permission_checker.clone(),
+            path_template: self.current_path.clone(),
+            resource_param: Some(resource_param),
+        };
+        self.attach_permission_guard(guard)
+    }
+
+    fn attach_permission_guard(mut self, guard: PermissionGuard) -> Self {
+        let guard = Arc::new(guard);
         if let Some(layer) = self.current_layer.take() {
             self.current_layer = Some(if self.pending_auth == Some(false) {
                 layer.route_layer(middleware::from_fn_with_state(

@@ -20,8 +20,8 @@ Use this guide when integrating [[projects/rustycog/references/rustycog-permissi
 - Build an `OpenFgaPermissionChecker` from `OpenFgaClientConfig` in your composition root.
 - Read `config.openfga.cache_ttl_seconds` and skip the `CachedPermissionChecker` decoration entirely when it is `Some(0)`; otherwise wrap with the configured TTL (default 15s when `None`). Then wrap with `MetricsPermissionChecker` before storing the result in `AppState`.
 - Pass that single `Arc<dyn PermissionChecker>` into `AppState::new(command_service, user_id_extractor, checker)`.
-- On every guarded route call `.with_permission_on(Permission::X, "<openfga_type>")` — the only authz knob.
-- Make sure each guarded route uses a UUID path parameter; middleware only binds the **deepest** UUID into `ResourceRef`. For routes like `/api/projects/{project_id}/components/{component_id}`, the resource is the component id, not the project id — important when arranging stubs in tests.
+- On every guarded route call `.with_permission_on(Permission::X, "<openfga_type>")` (deepest UUID) or `.with_permission_on_param(Permission::X, "<openfga_type>", "project_id")` for nested routes whose last UUID is not the object.
+- `with_permission_on` binds the **deepest** UUID into `ResourceRef`. Nested parent-typed routes (members, roles) must use `with_permission_on_param`.
 - For unit tests, use `InMemoryPermissionChecker` and explicit `allow(...)` calls. For integration tests that boot the real service, use [[projects/rustycog/references/openfga-mock-service]] (`OpenFgaFixtures::service().await`) and arrange per-tuple decisions via `mock_check_allow` / `mock_check_deny`.
 
 ## Test config

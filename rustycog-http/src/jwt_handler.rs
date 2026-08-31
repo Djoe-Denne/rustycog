@@ -15,6 +15,8 @@ pub struct UserIdExtractor {
     hs256_secret: Arc<String>,
     /// Default user ID to use (for testing/development)
     default_user_id: Option<Uuid>,
+    issuer: Option<String>,
+    audience: Option<String>,
 }
 
 impl UserIdExtractor {
@@ -24,7 +26,12 @@ impl UserIdExtractor {
     ///
     /// Returns [`CommandError`] if the HS256 JWT secret is missing or empty.
     pub fn new(auth_config: AuthConfig) -> Result<Self, CommandError> {
-        Self::from_secret(auth_config.jwt.hs256_secret, None)
+        Self::from_secret(
+            auth_config.jwt.hs256_secret,
+            None,
+            auth_config.jwt.issuer,
+            auth_config.jwt.audience,
+        )
     }
 
     /// Create a new user ID extractor with a pre-resolved secret
@@ -33,7 +40,7 @@ impl UserIdExtractor {
     ///
     /// Returns [`CommandError`] if the provided secret is empty after trimming.
     pub fn from_resolved_secret(secret: impl Into<String>) -> Result<Self, CommandError> {
-        Self::from_secret(Some(secret.into()), None)
+        Self::from_secret(Some(secret.into()), None, None, None)
     }
 
     /// Create a new user ID extractor with a default user ID
@@ -45,12 +52,19 @@ impl UserIdExtractor {
         auth_config: AuthConfig,
         user_id: Uuid,
     ) -> Result<Self, CommandError> {
-        Self::from_secret(auth_config.jwt.hs256_secret, Some(user_id))
+        Self::from_secret(
+            auth_config.jwt.hs256_secret,
+            Some(user_id),
+            auth_config.jwt.issuer,
+            auth_config.jwt.audience,
+        )
     }
 
     fn from_secret(
         hs256_secret: Option<String>,
         default_user_id: Option<Uuid>,
+        issuer: Option<String>,
+        audience: Option<String>,
     ) -> Result<Self, CommandError> {
         let secret = hs256_secret
             .map(|value| value.trim().to_string())
@@ -65,12 +79,29 @@ impl UserIdExtractor {
         Ok(Self {
             hs256_secret: Arc::new(secret),
             default_user_id,
+            issuer: issuer.and_then(|v| {
+                let t = v.trim().to_string();
+                (!t.is_empty()).then_some(t)
+            }),
+            audience: audience.and_then(|v| {
+                let t = v.trim().to_string();
+                (!t.is_empty()).then_some(t)
+            }),
         })
     }
 
-    fn validation() -> Validation {
+    fn validation(&self) -> Validation {
         let mut validation = Validation::new(Algorithm::HS256);
-        validation.required_spec_claims = HashSet::from([String::from("exp")]);
+        let mut required = HashSet::from([String::from("exp")]);
+        if let Some(iss) = &self.issuer {
+            validation.set_issuer(&[iss]);
+            required.insert(String::from("iss"));
+        }
+        if let Some(aud) = &self.audience {
+            validation.set_audience(&[aud]);
+            required.insert(String::from("aud"));
+        }
+        validation.required_spec_claims = required;
         validation.validate_nbf = false;
         validation
     }
@@ -108,7 +139,7 @@ impl UserIdExtractor {
         let token_data = decode::<serde_json::Value>(
             token,
             &DecodingKey::from_secret(self.hs256_secret.as_bytes()),
-            &Self::validation(),
+            &self.validation(),
         )
         .map_err(|error| Self::map_jwt_error(&error))?;
 

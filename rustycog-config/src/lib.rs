@@ -265,6 +265,12 @@ pub struct JwtAuthConfig {
     /// HS256 secret used to verify bearer tokens
     #[serde(default)]
     pub hs256_secret: Option<String>,
+    /// Expected `iss` claim. When set, tokens without this issuer are rejected.
+    #[serde(default)]
+    pub issuer: Option<String>,
+    /// Expected `aud` claim. When set, tokens without this audience are rejected.
+    #[serde(default)]
+    pub audience: Option<String>,
 }
 
 /// Scaleway configuration

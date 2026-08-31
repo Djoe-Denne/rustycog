@@ -4,10 +4,14 @@ use serde::Serialize;
 use uuid::Uuid;
 
 pub const TEST_HS256_SECRET: &str = "rustycog-test-hs256-secret";
+pub const TEST_JWT_ISSUER: &str = "iamrusty";
+pub const TEST_JWT_AUDIENCE: &str = "aiforall";
 
 #[derive(Debug, Serialize)]
 struct TestClaims {
     sub: String,
+    iss: String,
+    aud: String,
     exp: usize,
     iat: usize,
     jti: String,
@@ -30,6 +34,8 @@ pub fn create_jwt_token_with_secret(user_id: Uuid, secret: &str) -> String {
     let now = Utc::now();
     let claims = TestClaims {
         sub: user_id.to_string(),
+        iss: TEST_JWT_ISSUER.to_string(),
+        aud: TEST_JWT_AUDIENCE.to_string(),
         exp: unix_ts_as_usize((now + Duration::hours(1)).timestamp()),
         iat: unix_ts_as_usize(now.timestamp()),
         jti: Uuid::new_v4().to_string(),

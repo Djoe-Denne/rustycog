@@ -22,7 +22,7 @@ pub struct PermissionGuard {
     pub checker: Arc<dyn PermissionChecker>,
     /// Route template used when `resource_param` is set (e.g. `/orgs/{org_id}/members/{user_id}`).
     pub path_template: Option<String>,
-    /// Named path parameter to bind as the OpenFGA object id. `None` = deepest UUID.
+    /// Named path parameter to bind as the `OpenFGA` object id. `None` = deepest UUID.
     pub resource_param: Option<&'static str>,
 }
 

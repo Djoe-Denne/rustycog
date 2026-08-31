@@ -123,8 +123,8 @@ async fn make_server(
                 port: addr.port(),
                 tls_enabled: false,
                 tls_port: 0,
-                tls_cert_path: Default::default(),
-                tls_key_path: Default::default(),
+                tls_cert_path: String::default(),
+                tls_key_path: String::default(),
             })
             .await
             .map_err(|e| DomainError::internal_error(&format!("Server startup failed: {e}")))?;
@@ -138,8 +138,8 @@ fn make_token_for_user(user: Uuid) -> String {
     let now = chrono::Utc::now();
     let claims = TestClaims {
         sub: user.to_string(),
-        exp: (now + chrono::Duration::hours(1)).timestamp() as usize,
-        iat: now.timestamp() as usize,
+        exp: usize::try_from((now + chrono::Duration::hours(1)).timestamp()).unwrap_or(0),
+        iat: usize::try_from(now.timestamp()).unwrap_or(0),
         jti: Uuid::new_v4().to_string(),
     };
 

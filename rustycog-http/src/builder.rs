@@ -295,7 +295,7 @@ impl RouteBuilder {
         self.attach_permission_guard(guard)
     }
 
-    /// Like [`Self::with_permission_on`], but binds the OpenFGA object id from
+    /// Like [`Self::with_permission_on`], but binds the `OpenFGA` object id from
     /// a named path parameter on the current route template.
     ///
     /// Fail-closed (403) when the parameter is missing or not a UUID.

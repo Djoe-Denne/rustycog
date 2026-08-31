@@ -130,9 +130,15 @@ sont closes. Features défaut, pas `--all-features` (rdkafka-sys).
 
 ## Migration : pas nécessaire, voici pourquoi
 
-Audit `git diff 1c10714 8817a45 -- '*.rs'` (36 fichiers, campagne Sonar).
+Audit `git diff 1c10714 6b7f5fd -- '*.rs'`.
 **Aucune rupture compile-time** pour un crate consommateur. Pas de skill
 `rustycog-api-migration`.
+
+Après le skill (`47ca8dc`, 2026-08-30 15:56) :
+- `a46d22a` — fmt
+- `6b7f5fd` — rewrite locale `rustycog-http/src/tracing_middleware.rs`
+  (E0502 : cloner `x-correlation-id` avant insert). Pas d’API publique,
+  pas de nouvelle famille Clippy.
 
 - Aucune ligne `pub fn` / `pub async fn` / `pub struct` / `pub trait` / champ
   `pub` n’a changé de signature.

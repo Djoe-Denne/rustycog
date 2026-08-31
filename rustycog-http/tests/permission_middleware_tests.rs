@@ -74,7 +74,9 @@ async fn make_server(
     let registry = Arc::new(rustycog_framework::command::CommandRegistry::default());
     let extractor = UserIdExtractor::from_resolved_secret(TEST_JWT_SECRET).unwrap();
     let state = AppState::new(
-        Arc::new(rustycog_framework::command::GenericCommandService::new(registry)),
+        Arc::new(rustycog_framework::command::GenericCommandService::new(
+            registry,
+        )),
         extractor,
         checker as Arc<dyn PermissionChecker>,
     );

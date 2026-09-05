@@ -100,6 +100,9 @@ impl UserIdExtractor {
         if let Some(aud) = &self.audience {
             validation.set_audience(&[aud]);
             required.insert(String::from("aud"));
+        } else {
+            // jsonwebtoken validates `aud` by default whenever the token carries it.
+            validation.validate_aud = false;
         }
         validation.required_spec_claims = required;
         validation.validate_nbf = false;

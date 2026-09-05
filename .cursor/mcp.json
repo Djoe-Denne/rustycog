@@ -10,6 +10,24 @@
         "CONTEXT_MODE_PROJECT_DIR": "C:\\Users\\djden\\source\\repos\\rustycog",
         "PATH": "C:\\Program Files\\nodejs;C:\\Users\\djden\\AppData\\Roaming\\npm;${env:PATH}"
       }
+    },
+    "serena": {
+      "type": "stdio",
+      "command": "C:\\Users\\djden\\.cargo\\bin\\uvx.exe",
+      "args": [
+        "--from",
+        "serena-agent",
+        "serena",
+        "start-mcp-server",
+        "--context",
+        "ide",
+        "--mode",
+        "no-onboarding",
+        "--project",
+        "${workspaceFolder}",
+        "--transport",
+        "stdio"
+      ]
     }
   }
 }

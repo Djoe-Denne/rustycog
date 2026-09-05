@@ -1,0 +1,5 @@
+[mcp_servers.serena]
+command = 'C:\Users\djden\.cargo\bin\uvx.exe'
+args = ["--from", "serena-agent", "serena", "start-mcp-server", "--context=codex", "--mode", "no-onboarding", "--project", 'C:\Users\djden\source\repos\rustycog', "--transport", "stdio"]
+cwd = 'C:\Users\djden\source\repos\rustycog'
+startup_timeout_sec = 60

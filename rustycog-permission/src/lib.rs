@@ -22,6 +22,17 @@ pub use checker::{
     OpenFgaPermissionChecker,
 };
 
+/// One stored OpenFGA relationship tuple (`user` / `relation` / `object`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RelationshipTuple {
+    /// Subject on the wire, e.g. `user:{uuid}` or `organization:{uuid}#member`.
+    pub user: String,
+    /// Relation name, e.g. `member` or `viewer`.
+    pub relation: String,
+    /// Object on the wire, e.g. `organization:{uuid}` or `project:{uuid}`.
+    pub object: String,
+}
+
 /// Permission verbs recognized by the platform.
 ///
 /// Each variant maps to a relation on every object type defined in the `OpenFGA`

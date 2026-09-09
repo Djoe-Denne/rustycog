@@ -81,7 +81,20 @@ pub struct MockServerFixture {
 }
 
 impl MockServerFixture {
-    /// Create a new mock server fixture with automatic cleanup
+    /// Start a dedicated mock server for this fixture (no shared listener).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an ephemeral localhost port cannot be bound.
+    #[allow(clippy::expect_used)]
+    pub async fn isolated() -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("Failed to bind an ephemeral wiremock port");
+        let server = Arc::new(MockServer::builder().listener(listener).start().await);
+        Self { server }
+    }
+
+    /// Create a new mock server fixture on the shared listener with automatic cleanup.
     pub async fn new() -> Self {
         let server = get_mock_server().await;
 

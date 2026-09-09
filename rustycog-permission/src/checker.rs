@@ -17,7 +17,7 @@ use moka::future::Cache;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use super::{Permission, PermissionChecker, ResourceRef, Subject};
+use super::{Permission, PermissionChecker, RelationshipTuple, ResourceRef, Subject};
 
 // =============================================================================
 // OpenFGA
@@ -51,6 +51,113 @@ impl OpenFgaPermissionChecker {
             self.config.api_url().trim_end_matches('/'),
             self.config.store_id
         )
+    }
+
+    fn read_url(&self) -> String {
+        format!(
+            "{}/stores/{}/read",
+            self.config.api_url().trim_end_matches('/'),
+            self.config.store_id
+        )
+    }
+
+    /// Read stored relationship tuples. Pass `None` to leave a field unconstrained.
+    ///
+    /// This is the OpenFGA Read API (persisted tuples only, not computed
+    /// usersets). Pages through `continuation_token` until exhausted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the HTTP call fails or the response cannot
+    /// be decoded.
+    pub async fn read_tuples(
+        &self,
+        user: Option<&str>,
+        relation: Option<&str>,
+        object: Option<&str>,
+    ) -> Result<Vec<RelationshipTuple>, DomainError> {
+        #[derive(Serialize)]
+        struct ReadRequestBody {
+            tuple_key: ReadTupleKey,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            continuation_token: Option<String>,
+        }
+
+        #[derive(Serialize, Default)]
+        struct ReadTupleKey {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            user: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            relation: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            object: Option<String>,
+        }
+
+        #[derive(Deserialize)]
+        struct ReadResponseBody {
+            #[serde(default)]
+            tuples: Vec<ReadTupleEntry>,
+            #[serde(default)]
+            continuation_token: Option<String>,
+        }
+
+        #[derive(Deserialize)]
+        struct ReadTupleEntry {
+            key: RelationshipTuple,
+        }
+
+        let tuple_key = ReadTupleKey {
+            user: user.map(ToOwned::to_owned),
+            relation: relation.map(ToOwned::to_owned),
+            object: object.map(ToOwned::to_owned),
+        };
+
+        let mut collected = Vec::new();
+        let mut continuation_token: Option<String> = None;
+        loop {
+            let body = ReadRequestBody {
+                tuple_key: ReadTupleKey {
+                    user: tuple_key.user.clone(),
+                    relation: tuple_key.relation.clone(),
+                    object: tuple_key.object.clone(),
+                },
+                continuation_token,
+            };
+
+            let mut req = self.http.post(self.read_url()).json(&body);
+            if let Some(token) = &self.config.api_token {
+                req = req.bearer_auth(token);
+            }
+
+            let response = req.send().await.map_err(|e| DomainError::Internal {
+                message: format!("OpenFGA Read request failed: {e}"),
+            })?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let text = response.text().await.unwrap_or_default();
+                warn!(
+                    status = %status,
+                    body = %text,
+                    "OpenFGA Read returned non-success status"
+                );
+                return Err(DomainError::Internal {
+                    message: format!("OpenFGA Read returned {status}: {text}"),
+                });
+            }
+
+            let decoded: ReadResponseBody =
+                response.json().await.map_err(|e| DomainError::Internal {
+                    message: format!("Failed to decode OpenFGA Read response: {e}"),
+                })?;
+            collected.extend(decoded.tuples.into_iter().map(|entry| entry.key));
+            match decoded.continuation_token {
+                Some(token) if !token.is_empty() => continuation_token = Some(token),
+                _ => break,
+            }
+        }
+
+        Ok(collected)
     }
 }
 

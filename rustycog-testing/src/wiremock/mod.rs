@@ -14,14 +14,13 @@ static CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 ///
 /// # Panics
 ///
-/// Panics if port 3000 cannot be bound.
+/// Panics if an ephemeral localhost port cannot be bound.
 #[allow(clippy::expect_used)]
 pub async fn get_mock_server() -> Arc<MockServer> {
     MOCK_SERVER
         .get_or_init(|| async {
-            // Create a TCP listener on port 3000
-            let listener =
-                std::net::TcpListener::bind("127.0.0.1:3000").expect("Failed to bind to port 3000");
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")
+                .expect("Failed to bind an ephemeral wiremock port");
 
             let server = Arc::new(MockServer::builder().listener(listener).start().await);
             debug!("🚀 Started shared wiremock server at: {}", server.uri());

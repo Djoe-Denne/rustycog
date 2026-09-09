@@ -10,17 +10,20 @@ static MOCK_SERVER: OnceCell<Arc<MockServer>> = OnceCell::const_new();
 /// Flag to track if cleanup handler has been registered
 static CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 
-/// Get or create the shared mock server instance
+/// Get or create the shared mock server instance on `127.0.0.1:3000`.
+///
+/// Service `config/test.toml` files (IAM OAuth, Hive collaborators) pin that
+/// port. Use [`MockServerFixture::isolated`] when a test must not share it.
 ///
 /// # Panics
 ///
-/// Panics if an ephemeral localhost port cannot be bound.
+/// Panics if `127.0.0.1:3000` cannot be bound.
 #[allow(clippy::expect_used)]
 pub async fn get_mock_server() -> Arc<MockServer> {
     MOCK_SERVER
         .get_or_init(|| async {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0")
-                .expect("Failed to bind an ephemeral wiremock port");
+            let listener = std::net::TcpListener::bind("127.0.0.1:3000")
+                .expect("Failed to bind shared wiremock on 127.0.0.1:3000");
 
             let server = Arc::new(MockServer::builder().listener(listener).start().await);
             debug!("🚀 Started shared wiremock server at: {}", server.uri());

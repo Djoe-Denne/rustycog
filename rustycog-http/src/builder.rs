@@ -236,16 +236,27 @@ pub async fn serve_router(app: Router, config: ServerConfig) -> anyhow::Result<(
             config.tls_port
         );
 
-        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
-            config.tls_cert_path,
-            config.tls_key_path,
-        )
-        .await?;
-        let addr: SocketAddr = format!("{}:{}", config.host, config.tls_port).parse()?;
+        super::tls::install_crypto_provider();
 
-        axum_server::bind_rustls(addr, tls_config)
-            .serve(app.into_make_service())
+        if config.tls_client_ca_path.is_empty() {
+            let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+                config.tls_cert_path,
+                config.tls_key_path,
+            )
             .await?;
+            let addr: SocketAddr = format!("{}:{}", config.host, config.tls_port).parse()?;
+
+            axum_server::bind_rustls(addr, tls_config)
+                .serve(app.into_make_service())
+                .await?;
+        } else {
+            let addr: SocketAddr = format!("{}:{}", config.host, config.tls_port).parse()?;
+            let tls_config = super::tls::rustls_config_with_optional_client_auth(&config)?;
+            axum_server::bind(addr)
+                .acceptor(super::tls::PeerClientCertAcceptor::new(tls_config))
+                .serve(app.into_make_service())
+                .await?;
+        }
     } else {
         let port = config.actual_port();
         tracing::info!("Starting HTTP server on {}:{}", config.host, port);

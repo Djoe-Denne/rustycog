@@ -59,6 +59,7 @@ where
         } else {
             String::new()
         },
+        tls_client_ca_path: config.server_config().tls_client_ca_path.clone(),
         tls_port: if config.server_config().tls_enabled {
             config.server_config().tls_port
         } else {

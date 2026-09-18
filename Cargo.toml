@@ -108,10 +108,12 @@ http = [
     "dep:chrono",
     "dep:jsonwebtoken",
     "dep:reqwest",
+    "dep:rustls",
     "dep:serde",
     "dep:serde_json",
     "dep:thiserror",
     "dep:tokio",
+    "dep:tokio-rustls",
     "dep:tower",
     "dep:tower-http",
     "dep:tracing",
@@ -214,6 +216,7 @@ thiserror = { version = "2", optional = true }
 testcontainers = { version = "0.24", optional = true }
 testcontainers-modules = { version = "0.12", optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "net"], optional = true }
+tokio-rustls = { version = "0.26", optional = true }
 toml = { version = "0.8", optional = true }
 tower = { version = "0.5", optional = true }
 tower-http = { version = "0.6", features = ["catch-panic", "propagate-header"], optional = true }
@@ -231,9 +234,16 @@ name = "permission_middleware"
 path = "rustycog-http/tests/permission_middleware_tests.rs"
 required-features = ["http"]
 
+[[test]]
+name = "mtls_client_auth"
+path = "rustycog-http/tests/mtls_client_auth.rs"
+required-features = ["http"]
+
 [dev-dependencies]
 claims = "0.8"
 mockall = "0.13"
+rcgen = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rstest = "0.25"
 serde_json = "1"
 tempfile = "3"

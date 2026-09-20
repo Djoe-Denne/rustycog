@@ -126,9 +126,18 @@ fn ephemeral_port() -> u16 {
 }
 
 fn server_config(pki: &TestPki, tls_client_ca_path: String, tls_port: u16) -> ServerConfig {
+    dual_bind_config(pki, 0, tls_client_ca_path, tls_port)
+}
+
+fn dual_bind_config(
+    pki: &TestPki,
+    http_port: u16,
+    tls_client_ca_path: String,
+    tls_port: u16,
+) -> ServerConfig {
     ServerConfig {
         host: "127.0.0.1".into(),
-        port: 0,
+        port: http_port,
         tls_enabled: true,
         tls_cert_path: pki.server_cert_path.clone(),
         tls_key_path: pki.server_key_path.clone(),
@@ -146,6 +155,14 @@ fn https_client(identity_pem: Option<&[u8]>) -> reqwest::Client {
         builder = builder.identity(reqwest::Identity::from_pem(pem).unwrap());
     }
     builder.build().unwrap()
+}
+
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
 }
 
 async fn spawn_server(config: ServerConfig) -> tokio::task::JoinHandle<anyhow::Result<()>> {
@@ -253,6 +270,77 @@ async fn foreign_client_cert_fails_handshake() {
             response.status()
         ),
     }
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn dual_bind_http_and_optional_mtls() {
+    install_crypto();
+    let pki = generate_pki();
+    let http_port = ephemeral_port();
+    let tls_port = ephemeral_port();
+    let http_url = format!("http://127.0.0.1:{http_port}/peer");
+    let https_url = format!("https://127.0.0.1:{tls_port}/peer");
+    let handle = spawn_server(dual_bind_config(
+        &pki,
+        http_port,
+        pki.client_ca_path.clone(),
+        tls_port,
+    ))
+    .await;
+
+    let plain = http_client();
+    wait_until_ready(&handle, &plain, &http_url).await;
+    let https_probe = https_client(None);
+    wait_until_ready(&handle, &https_probe, &https_url).await;
+
+    assert_eq!(get_body(&plain, &http_url).await, "none");
+    assert_eq!(get_body(&https_probe, &https_url).await, "none");
+
+    let mesh = https_client(Some(&pki.client_identity_pem));
+    assert_eq!(
+        get_body(&mesh, &https_url).await,
+        format!("der:{}", hex_encode(&pki.client_leaf_der))
+    );
+
+    let foreign = https_client(Some(&pki.foreign_identity_pem));
+    match foreign.get(&https_url).send().await {
+        Err(_) => {}
+        Ok(response) => assert!(
+            !response.status().is_success(),
+            "foreign client cert must not get 2xx, got {}",
+            response.status()
+        ),
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn matching_http_and_tls_port_binds_tls_only() {
+    install_crypto();
+    let pki = generate_pki();
+    let port = ephemeral_port();
+    let https_url = format!("https://127.0.0.1:{port}/peer");
+    let http_url = format!("http://127.0.0.1:{port}/peer");
+    let handle = spawn_server(dual_bind_config(
+        &pki,
+        port,
+        pki.client_ca_path.clone(),
+        port,
+    ))
+    .await;
+
+    let https_probe = https_client(None);
+    wait_until_ready(&handle, &https_probe, &https_url).await;
+    assert_eq!(get_body(&https_probe, &https_url).await, "none");
+
+    let plain = http_client();
+    assert!(
+        plain.get(&http_url).send().await.is_err(),
+        "HTTP client must not succeed on a TLS-only listener"
+    );
 
     handle.abort();
 }

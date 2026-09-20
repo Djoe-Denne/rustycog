@@ -224,47 +224,72 @@ impl RouteBuilder {
 
 /// Serve an already-built Axum router using the configured HTTP/TLS listener.
 ///
+/// When TLS is enabled and `port` is a distinct non-zero value from `tls_port`,
+/// both HTTP (`port`) and HTTPS (`tls_port`) are bound concurrently. When
+/// `port == 0` or `port == tls_port`, only HTTPS is bound (TLS-only, used by
+/// listeners that replaced HTTP in place).
+///
 /// # Errors
 ///
 /// Returns an error if the listen address is invalid, TLS certificates cannot
 /// be loaded, the socket cannot be bound, or the server fails while serving.
 pub async fn serve_router(app: Router, config: ServerConfig) -> anyhow::Result<()> {
     if config.tls_enabled {
-        tracing::info!(
-            "Starting HTTPS server on {}:{}",
-            config.host,
-            config.tls_port
-        );
-
         super::tls::install_crypto_provider();
-
-        if config.tls_client_ca_path.is_empty() {
-            let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
-                config.tls_cert_path,
-                config.tls_key_path,
-            )
-            .await?;
-            let addr: SocketAddr = format!("{}:{}", config.host, config.tls_port).parse()?;
-
-            axum_server::bind_rustls(addr, tls_config)
-                .serve(app.into_make_service())
-                .await?;
+        let dual_bind = config.port != 0 && config.port != config.tls_port;
+        if dual_bind {
+            tracing::info!(
+                "Starting HTTP server on {}:{} and HTTPS server on {}:{}",
+                config.host,
+                config.port,
+                config.host,
+                config.tls_port
+            );
+            let https = serve_https(app.clone(), &config);
+            let http = serve_http(app, config.port, &config.host);
+            tokio::try_join!(http, https)?;
         } else {
-            let addr: SocketAddr = format!("{}:{}", config.host, config.tls_port).parse()?;
-            let tls_config = super::tls::rustls_config_with_optional_client_auth(&config)?;
-            axum_server::bind(addr)
-                .acceptor(super::tls::PeerClientCertAcceptor::new(tls_config))
-                .serve(app.into_make_service())
-                .await?;
+            tracing::info!(
+                "Starting HTTPS server on {}:{}",
+                config.host,
+                config.tls_port
+            );
+            serve_https(app, &config).await?;
         }
     } else {
         let port = config.actual_port();
         tracing::info!("Starting HTTP server on {}:{}", config.host, port);
-        let addr: SocketAddr = format!("{}:{}", config.host, port).parse()?;
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        axum::serve(listener, app).await?;
+        serve_http(app, port, &config.host).await?;
     }
 
+    Ok(())
+}
+
+async fn serve_http(app: Router, port: u16, host: &str) -> anyhow::Result<()> {
+    let addr: SocketAddr = format!("{host}:{port}").parse()?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn serve_https(app: Router, config: &ServerConfig) -> anyhow::Result<()> {
+    let addr: SocketAddr = format!("{}:{}", config.host, config.tls_port).parse()?;
+    if config.tls_client_ca_path.is_empty() {
+        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+            &config.tls_cert_path,
+            &config.tls_key_path,
+        )
+        .await?;
+        axum_server::bind_rustls(addr, tls_config)
+            .serve(app.into_make_service())
+            .await?;
+    } else {
+        let tls_config = super::tls::rustls_config_with_optional_client_auth(config)?;
+        axum_server::bind(addr)
+            .acceptor(super::tls::PeerClientCertAcceptor::new(tls_config))
+            .serve(app.into_make_service())
+            .await?;
+    }
     Ok(())
 }
 

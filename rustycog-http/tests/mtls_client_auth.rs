@@ -278,34 +278,34 @@ async fn foreign_client_cert_fails_handshake() {
 async fn dual_bind_http_and_optional_mtls() {
     install_crypto();
     let pki = generate_pki();
-    let http_port = ephemeral_port();
-    let tls_port = ephemeral_port();
-    let http_url = format!("http://127.0.0.1:{http_port}/peer");
-    let https_url = format!("https://127.0.0.1:{tls_port}/peer");
+    let cleartext_port = ephemeral_port();
+    let tls_listen = ephemeral_port();
+    let cleartext_url = format!("http://127.0.0.1:{cleartext_port}/peer");
+    let tls_url = format!("https://127.0.0.1:{tls_listen}/peer");
     let handle = spawn_server(dual_bind_config(
         &pki,
-        http_port,
+        cleartext_port,
         pki.client_ca_path.clone(),
-        tls_port,
+        tls_listen,
     ))
     .await;
 
     let plain = http_client();
-    wait_until_ready(&handle, &plain, &http_url).await;
-    let https_probe = https_client(None);
-    wait_until_ready(&handle, &https_probe, &https_url).await;
+    wait_until_ready(&handle, &plain, &cleartext_url).await;
+    let tls_probe = https_client(None);
+    wait_until_ready(&handle, &tls_probe, &tls_url).await;
 
-    assert_eq!(get_body(&plain, &http_url).await, "none");
-    assert_eq!(get_body(&https_probe, &https_url).await, "none");
+    assert_eq!(get_body(&plain, &cleartext_url).await, "none");
+    assert_eq!(get_body(&tls_probe, &tls_url).await, "none");
 
     let mesh = https_client(Some(&pki.client_identity_pem));
     assert_eq!(
-        get_body(&mesh, &https_url).await,
+        get_body(&mesh, &tls_url).await,
         format!("der:{}", hex_encode(&pki.client_leaf_der))
     );
 
     let foreign = https_client(Some(&pki.foreign_identity_pem));
-    match foreign.get(&https_url).send().await {
+    match foreign.get(&tls_url).send().await {
         Err(_) => {}
         Ok(response) => assert!(
             !response.status().is_success(),
@@ -321,24 +321,24 @@ async fn dual_bind_http_and_optional_mtls() {
 async fn matching_http_and_tls_port_binds_tls_only() {
     install_crypto();
     let pki = generate_pki();
-    let port = ephemeral_port();
-    let https_url = format!("https://127.0.0.1:{port}/peer");
-    let http_url = format!("http://127.0.0.1:{port}/peer");
+    let shared_port = ephemeral_port();
+    let tls_url = format!("https://127.0.0.1:{shared_port}/peer");
+    let cleartext_url = format!("http://127.0.0.1:{shared_port}/peer");
     let handle = spawn_server(dual_bind_config(
         &pki,
-        port,
+        shared_port,
         pki.client_ca_path.clone(),
-        port,
+        shared_port,
     ))
     .await;
 
-    let https_probe = https_client(None);
-    wait_until_ready(&handle, &https_probe, &https_url).await;
-    assert_eq!(get_body(&https_probe, &https_url).await, "none");
+    let tls_probe = https_client(None);
+    wait_until_ready(&handle, &tls_probe, &tls_url).await;
+    assert_eq!(get_body(&tls_probe, &tls_url).await, "none");
 
     let plain = http_client();
     assert!(
-        plain.get(&http_url).send().await.is_err(),
+        plain.get(&cleartext_url).send().await.is_err(),
         "HTTP client must not succeed on a TLS-only listener"
     );
 

@@ -264,17 +264,56 @@ pub struct AuthConfig {
 }
 
 /// JWT verification configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JwtAuthConfig {
-    /// HS256 secret used to verify bearer tokens
+    /// HS256 secret used to verify bearer tokens (required when HS256 is allowed).
     #[serde(default)]
     pub hs256_secret: Option<String>,
-    /// Expected `iss` claim. When set, tokens without this issuer are rejected.
+    /// Expected `iss` claim for the HS256 migration window.
+    ///
+    /// Not applied to RS256 verification — JWK `iss` is the source of truth there.
     #[serde(default)]
     pub issuer: Option<String>,
     /// Expected `aud` claim. When set, tokens without this audience are rejected.
     #[serde(default)]
     pub audience: Option<String>,
+    /// URL of the JWKS document used for RS256 verification.
+    #[serde(default)]
+    pub jwks_url: Option<String>,
+    /// Allowed JWT algorithms (e.g. `["RS256"]` or `["RS256", "HS256"]`).
+    ///
+    /// Empty default: if `jwks_url` is set → `[RS256]`; else if `hs256_secret`
+    /// is set → `[HS256]` (legacy).
+    #[serde(default)]
+    pub allowed_algorithms: Vec<String>,
+    /// Periodic JWKS refresh interval in seconds when `jwks_url` is set.
+    #[serde(default = "default_jwks_refresh_interval_secs")]
+    pub jwks_refresh_interval_secs: u64,
+    /// Negative-cache TTL in seconds for a kid missing after a JWKS refresh.
+    #[serde(default = "default_jwks_negative_cache_ttl_secs")]
+    pub jwks_negative_cache_ttl_secs: u64,
+}
+
+fn default_jwks_refresh_interval_secs() -> u64 {
+    300
+}
+
+fn default_jwks_negative_cache_ttl_secs() -> u64 {
+    30
+}
+
+impl Default for JwtAuthConfig {
+    fn default() -> Self {
+        Self {
+            hs256_secret: None,
+            issuer: None,
+            audience: None,
+            jwks_url: None,
+            allowed_algorithms: Vec::new(),
+            jwks_refresh_interval_secs: default_jwks_refresh_interval_secs(),
+            jwks_negative_cache_ttl_secs: default_jwks_negative_cache_ttl_secs(),
+        }
+    }
 }
 
 /// Scaleway configuration

@@ -1,6 +1,7 @@
 pub mod builder;
 pub mod error;
 pub mod extractors;
+mod jwks;
 pub mod jwt;
 pub mod jwt_handler;
 pub mod middleware_auth;
@@ -12,7 +13,7 @@ pub use builder::{serve_router, AppState, RouteBuilder};
 pub use error::{GenericHttpError, ValidationError};
 pub use extractors::ValidatedJson;
 pub use jwt::TokenClaims;
-pub use jwt_handler::{UserIdExtractionHandler, UserIdExtractor};
+pub use jwt_handler::{JwtPrincipal, UserIdExtractionHandler, UserIdExtractor, ACCESS_TOKEN_TYP};
 pub use middleware_auth::{auth_middleware, optional_auth_middleware, AuthUser, OptionalAuthUser};
 pub use tls::PeerClientCertificate;
 pub use tracing_middleware::{

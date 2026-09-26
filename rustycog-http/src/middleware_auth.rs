@@ -73,7 +73,7 @@ fn extract_token(auth_header: &str) -> Option<&str> {
     auth_header.strip_prefix("Bearer ")
 }
 
-/// Authentication middleware using simple user ID extractor
+/// Authentication middleware using JWT user ID / principal extractor
 ///
 /// # Errors
 ///
@@ -106,18 +106,20 @@ pub async fn auth_middleware(
         request_id.unwrap_or_default()
     );
 
-    // Extract user ID from token (no verification)
-    let user_id = user_id_extractor.extract_user_id(token).map_err(|e| {
-        debug!("User ID extraction failed: {}", e);
-        StatusCode::UNAUTHORIZED
-    })?;
+    let principal = user_id_extractor
+        .extract_principal(token)
+        .await
+        .map_err(|e| {
+            debug!("User ID extraction failed: {}", e);
+            StatusCode::UNAUTHORIZED
+        })?;
 
-    // Add the user ID to the request extensions
     let mut req = req;
-    req.extensions_mut().insert(user_id);
+    // Keep inserting Uuid so AuthUser / OptionalAuthUser / permission middleware work.
+    req.extensions_mut().insert(principal.sub);
+    req.extensions_mut().insert(principal.clone());
 
-    debug!("User ID added to request extensions: {:?}", user_id);
-    // Continue with the request
+    debug!("User ID added to request extensions: {:?}", principal.sub);
     Ok(next.run(req).await)
 }
 
@@ -152,12 +154,11 @@ pub async fn optional_auth_middleware(
                 request_id.unwrap_or_default()
             );
 
-            // Try to extract user ID from token
-            if let Ok(user_id) = user_id_extractor.extract_user_id(token) {
-                // Add the user ID to the request extensions if successful
+            if let Ok(principal) = user_id_extractor.extract_principal(token).await {
                 let mut req = req;
-                req.extensions_mut().insert(user_id);
-                debug!("User ID added to request extensions: {:?}", user_id);
+                req.extensions_mut().insert(principal.sub);
+                req.extensions_mut().insert(principal.clone());
+                debug!("User ID added to request extensions: {:?}", principal.sub);
                 return Ok(next.run(req).await);
             }
             debug!("Optional user ID extraction failed, continuing without auth");

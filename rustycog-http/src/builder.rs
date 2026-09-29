@@ -273,6 +273,11 @@ async fn serve_http(app: Router, port: u16, host: &str) -> anyhow::Result<()> {
 }
 
 async fn serve_https(app: Router, config: &ServerConfig) -> anyhow::Result<()> {
+    if config.tls_require_client_cert && config.tls_client_ca_path.is_empty() {
+        anyhow::bail!(
+            "tls_require_client_cert requires tls_client_ca_path (fail-closed)"
+        );
+    }
     let addr: SocketAddr = format!("{}:{}", config.host, config.tls_port).parse()?;
     if config.tls_client_ca_path.is_empty() {
         let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
@@ -284,7 +289,7 @@ async fn serve_https(app: Router, config: &ServerConfig) -> anyhow::Result<()> {
             .serve(app.into_make_service())
             .await?;
     } else {
-        let tls_config = super::tls::rustls_config_with_optional_client_auth(config)?;
+        let tls_config = super::tls::rustls_config_with_client_auth(config)?;
         axum_server::bind(addr)
             .acceptor(super::tls::PeerClientCertAcceptor::new(tls_config))
             .serve(app.into_make_service())

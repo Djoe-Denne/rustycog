@@ -142,6 +142,7 @@ fn dual_bind_config(
         tls_cert_path: pki.server_cert_path.clone(),
         tls_key_path: pki.server_key_path.clone(),
         tls_client_ca_path,
+        tls_require_client_cert: false,
         tls_port,
     }
 }
@@ -272,6 +273,64 @@ async fn foreign_client_cert_fails_handshake() {
     }
 
     handle.abort();
+}
+
+fn required_server_config(pki: &TestPki, tls_port: u16) -> ServerConfig {
+    let mut config = server_config(pki, pki.client_ca_path.clone(), tls_port);
+    config.tls_require_client_cert = true;
+    config
+}
+
+#[tokio::test]
+async fn required_client_cert_rejects_missing_and_foreign_ca() {
+    install_crypto();
+    let pki = generate_pki();
+    let port = ephemeral_port();
+    let url = format!("https://127.0.0.1:{port}/peer");
+    let handle = spawn_server(required_server_config(&pki, port)).await;
+
+    let mesh = https_client(Some(&pki.client_identity_pem));
+    wait_until_ready(&handle, &mesh, &url).await;
+    assert_eq!(
+        get_body(&mesh, &url).await,
+        format!("der:{}", hex_encode(&pki.client_leaf_der))
+    );
+
+    let bare = https_client(None);
+    assert!(
+        bare.get(&url).send().await.is_err(),
+        "missing client certificate must fail the handshake"
+    );
+
+    let foreign = https_client(Some(&pki.foreign_identity_pem));
+    match foreign.get(&url).send().await {
+        Err(_) => {}
+        Ok(response) => assert!(
+            !response.status().is_success(),
+            "foreign client cert must not get 2xx, got {}",
+            response.status()
+        ),
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn required_client_cert_without_ca_does_not_start() {
+    install_crypto();
+    let pki = generate_pki();
+    let port = ephemeral_port();
+    let mut config = server_config(&pki, String::new(), port);
+    config.tls_require_client_cert = true;
+    let handle = spawn_server(config).await;
+    let joined = tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("server should exit when client CA is missing");
+    let started = joined.expect("server task");
+    assert!(
+        started.is_err(),
+        "tls_require_client_cert without a CA must fail closed"
+    );
 }
 
 #[tokio::test]

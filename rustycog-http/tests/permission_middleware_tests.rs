@@ -126,6 +126,7 @@ async fn make_server(
                 tls_cert_path: String::default(),
                 tls_key_path: String::default(),
                 tls_client_ca_path: String::default(),
+                tls_require_client_cert: false,
             })
             .await
             .map_err(|e| DomainError::internal_error(&format!("Server startup failed: {e}")))?;

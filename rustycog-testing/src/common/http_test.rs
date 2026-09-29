@@ -60,6 +60,7 @@ where
             String::new()
         },
         tls_client_ca_path: config.server_config().tls_client_ca_path.clone(),
+        tls_require_client_cert: config.server_config().tls_require_client_cert,
         tls_port: if config.server_config().tls_enabled {
             config.server_config().tls_port
         } else {

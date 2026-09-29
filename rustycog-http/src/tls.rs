@@ -34,15 +34,19 @@ pub(crate) fn install_crypto_provider() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
-/// Build a rustls server config that *requests* a client cert signed by
-/// `tls_client_ca_path` but still accepts connections without one.
+/// Build a rustls server config that verifies client certs against
+/// `tls_client_ca_path`.
+///
+/// `tls_require_client_cert` false still accepts connections without a
+/// certificate. True requires one. Callers must refuse to start when the
+/// flag is true and the CA path is empty.
 ///
 /// # Errors
 ///
 /// Returns an error if the crypto provider cannot be used, the server
 /// certificate/key or client CA PEM cannot be loaded, or rustls rejects the
 /// resulting configuration.
-pub(crate) fn rustls_config_with_optional_client_auth(
+pub(crate) fn rustls_config_with_client_auth(
     config: &ServerConfig,
 ) -> anyhow::Result<RustlsConfig> {
     install_crypto_provider();
@@ -51,8 +55,11 @@ pub(crate) fn rustls_config_with_optional_client_auth(
     let key = load_private_key(&config.tls_key_path)?;
     let roots = load_client_ca_roots(&config.tls_client_ca_path)?;
 
-    let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
-        .allow_unauthenticated()
+    let mut verifier_builder = WebPkiClientVerifier::builder(Arc::new(roots));
+    if !config.tls_require_client_cert {
+        verifier_builder = verifier_builder.allow_unauthenticated();
+    }
+    let verifier = verifier_builder
         .build()
         .context("failed to build TLS client certificate verifier")?;
 

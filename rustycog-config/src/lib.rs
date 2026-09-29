@@ -28,9 +28,14 @@ pub struct ServerConfig {
     /// Path to TLS private key file
     #[serde(default = "default_key_path")]
     pub tls_key_path: String,
-    /// PEM CA used to verify optional client certificates. Empty = one-way TLS (off).
+    /// PEM CA used to verify client certificates. Empty = one-way TLS (off).
     #[serde(default)]
     pub tls_client_ca_path: String,
+    /// When true, a client certificate signed by `tls_client_ca_path` is required.
+    ///
+    /// Default false keeps optional client auth. Empty CA plus true refuses to start.
+    #[serde(default)]
+    pub tls_require_client_cert: bool,
     /// Port to use when TLS is enabled
     #[serde(default = "default_tls_port")]
     pub tls_port: u16,
@@ -45,6 +50,7 @@ impl Default for ServerConfig {
             tls_cert_path: default_cert_path(),
             tls_key_path: default_key_path(),
             tls_client_ca_path: String::new(),
+            tls_require_client_cert: false,
             tls_port: default_tls_port(),
         }
     }

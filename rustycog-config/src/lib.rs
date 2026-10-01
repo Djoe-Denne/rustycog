@@ -267,6 +267,22 @@ pub struct AuthConfig {
     /// JWT verification settings
     #[serde(default)]
     pub jwt: JwtAuthConfig,
+    /// Gateway-verified principal (mesh mode). Off by default.
+    #[serde(default)]
+    pub mesh: MeshAuthConfig,
+}
+
+/// Mesh mode: a gateway has already verified the JWT.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MeshAuthConfig {
+    /// DNS SAN of the gateway client certificate.
+    ///
+    /// When set, authenticated routes never verify the bearer JWT. They read
+    /// `x-principal-iss` / `x-principal-sub` only on mTLS connections whose
+    /// peer certificate carries this SAN, and answer 401 otherwise. Empty keeps
+    /// in-process JWT verification.
+    #[serde(default)]
+    pub trusted_gateway_san: String,
 }
 
 /// JWT verification configuration

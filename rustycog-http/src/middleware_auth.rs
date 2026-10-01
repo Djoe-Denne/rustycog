@@ -8,7 +8,9 @@ use axum::{
 use tracing::debug;
 use uuid::Uuid;
 
-use super::jwt_handler::UserIdExtractor;
+use super::jwt_handler::{JwtPrincipal, UserIdExtractor};
+use super::mesh_principal::gateway_principal;
+use super::tls::PeerClientCertificate;
 use std::sync::Arc;
 
 /// Authenticated user information extracted from middleware
@@ -73,17 +75,48 @@ fn extract_token(auth_header: &str) -> Option<&str> {
     auth_header.strip_prefix("Bearer ")
 }
 
+fn request_gateway_principal(
+    req: &Request<Body>,
+    gateway_san: &str,
+) -> Result<JwtPrincipal, &'static str> {
+    gateway_principal(
+        req.extensions().get::<PeerClientCertificate>(),
+        req.headers(),
+        gateway_san,
+    )
+}
+
+fn with_principal(mut req: Request<Body>, principal: JwtPrincipal) -> Request<Body> {
+    // Keep inserting Uuid so AuthUser / OptionalAuthUser / permission middleware work.
+    req.extensions_mut().insert(principal.sub);
+    debug!("User ID added to request extensions: {:?}", principal.sub);
+    req.extensions_mut().insert(principal);
+    req
+}
+
 /// Authentication middleware using JWT user ID / principal extractor
+///
+/// In mesh mode the bearer JWT is ignored: the principal comes from the
+/// gateway headers on an mTLS connection from the gateway.
 ///
 /// # Errors
 ///
 /// Returns [`StatusCode::UNAUTHORIZED`] if the Authorization header is missing,
-/// is not a Bearer token, or user ID extraction fails.
+/// is not a Bearer token, or user ID extraction fails. In mesh mode, returns it
+/// when the peer is not the gateway or the principal headers are invalid.
 pub async fn auth_middleware(
     State(user_id_extractor): State<Arc<UserIdExtractor>>,
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    if let Some(gateway_san) = user_id_extractor.gateway_san() {
+        let principal = request_gateway_principal(&req, gateway_san).map_err(|reason| {
+            debug!(reason, "Gateway principal rejected");
+            StatusCode::UNAUTHORIZED
+        })?;
+        return Ok(next.run(with_principal(req, principal)).await);
+    }
+
     // Get the Authorization header
     let auth_header = req
         .headers()
@@ -114,13 +147,7 @@ pub async fn auth_middleware(
             StatusCode::UNAUTHORIZED
         })?;
 
-    let mut req = req;
-    // Keep inserting Uuid so AuthUser / OptionalAuthUser / permission middleware work.
-    req.extensions_mut().insert(principal.sub);
-    req.extensions_mut().insert(principal.clone());
-
-    debug!("User ID added to request extensions: {:?}", principal.sub);
-    Ok(next.run(req).await)
+    Ok(next.run(with_principal(req, principal)).await)
 }
 
 /// Optional authentication middleware that doesn't fail if no auth is provided
@@ -134,6 +161,16 @@ pub async fn optional_auth_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    if let Some(gateway_san) = user_id_extractor.gateway_san() {
+        return Ok(match request_gateway_principal(&req, gateway_san) {
+            Ok(principal) => next.run(with_principal(req, principal)).await,
+            Err(reason) => {
+                debug!(reason, "No gateway principal, continuing without auth");
+                next.run(req).await
+            }
+        });
+    }
+
     // Try to get the Authorization header, but don't fail if it's missing
     if let Some(auth_header) = req
         .headers()
@@ -155,11 +192,7 @@ pub async fn optional_auth_middleware(
             );
 
             if let Ok(principal) = user_id_extractor.extract_principal(token).await {
-                let mut req = req;
-                req.extensions_mut().insert(principal.sub);
-                req.extensions_mut().insert(principal.clone());
-                debug!("User ID added to request extensions: {:?}", principal.sub);
-                return Ok(next.run(req).await);
+                return Ok(next.run(with_principal(req, principal)).await);
             }
             debug!("Optional user ID extraction failed, continuing without auth");
         }

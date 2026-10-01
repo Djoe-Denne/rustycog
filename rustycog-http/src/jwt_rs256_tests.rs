@@ -43,6 +43,7 @@ async fn hs256_rejected_when_only_rs256_allowed() {
             audience: Some(TEST_JWT_AUDIENCE.to_string()),
             ..JwtAuthConfig::default()
         },
+        ..AuthConfig::default()
     };
     let extractor = UserIdExtractor::from_config_with_inline_jwks(auth, test_rs256_jwks_json())
         .expect("dual-config RS256-only");
@@ -67,6 +68,7 @@ async fn hs256_accepted_when_allowed_with_secret() {
             audience: Some(TEST_JWT_AUDIENCE.to_string()),
             ..JwtAuthConfig::default()
         },
+        ..AuthConfig::default()
     };
     let extractor = UserIdExtractor::from_config_with_inline_jwks(auth, test_rs256_jwks_json())
         .expect("window config");

@@ -119,6 +119,7 @@ http = [
     "dep:tracing",
     "dep:uuid",
     "dep:validator",
+    "dep:x509-parser",
 ]
 logger = [
     "core",
@@ -228,6 +229,7 @@ url = { version = "2.5", optional = true }
 uuid = { version = "1", features = ["serde", "v4"], optional = true }
 validator = { version = "0.20", features = ["derive"], optional = true }
 wiremock = { version = "0.6", optional = true }
+x509-parser = { version = "0.16", optional = true }
 
 [[test]]
 name = "permission_middleware"
@@ -237,6 +239,11 @@ required-features = ["http"]
 [[test]]
 name = "mtls_client_auth"
 path = "rustycog-http/tests/mtls_client_auth.rs"
+required-features = ["http"]
+
+[[test]]
+name = "mesh_gateway_auth"
+path = "rustycog-http/tests/mesh_gateway_auth.rs"
 required-features = ["http"]
 
 [dev-dependencies]

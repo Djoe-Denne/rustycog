@@ -2,7 +2,7 @@
 
 use super::jwks::JwksCache;
 use crate::rustycog_command::{Command, CommandError, CommandHandler, ValidateTokenCommand};
-use crate::rustycog_config::{AuthConfig, JwtAuthConfig};
+use crate::rustycog_config::{AuthConfig, JwtAuthConfig, MeshAuthConfig};
 use async_trait::async_trait;
 use jsonwebtoken::{
     decode, decode_header, errors::ErrorKind, Algorithm, DecodingKey, Header, Validation,
@@ -39,6 +39,8 @@ pub struct UserIdExtractor {
     hs256_issuer: Option<String>,
     audience: Option<String>,
     jwks: Option<Arc<JwksCache>>,
+    /// Mesh mode: SAN of the gateway whose `x-principal-*` headers are trusted.
+    gateway_san: Option<Arc<str>>,
 }
 
 impl UserIdExtractor {
@@ -51,6 +53,20 @@ impl UserIdExtractor {
     /// JWKS URL (and no inline JWKS was provided via another constructor).
     pub fn new(auth_config: AuthConfig) -> Result<Self, CommandError> {
         Self::from_parts(auth_config.jwt, None, None)
+            .map(|extractor| extractor.with_mesh(&auth_config.mesh))
+    }
+
+    fn with_mesh(mut self, mesh: &MeshAuthConfig) -> Self {
+        let san = mesh.trusted_gateway_san.trim();
+        self.gateway_san = (!san.is_empty()).then(|| Arc::from(san));
+        self
+    }
+
+    /// Gateway SAN when mesh mode is on: authenticated routes then read the
+    /// gateway principal instead of verifying the bearer JWT.
+    #[must_use]
+    pub fn gateway_san(&self) -> Option<&str> {
+        self.gateway_san.as_deref()
     }
 
     /// Create a new user ID extractor with a pre-resolved HS256 secret.
@@ -76,6 +92,7 @@ impl UserIdExtractor {
             hs256_issuer: None,
             audience: None,
             jwks: None,
+            gateway_san: None,
         })
     }
 
@@ -91,6 +108,7 @@ impl UserIdExtractor {
         user_id: Uuid,
     ) -> Result<Self, CommandError> {
         Self::from_parts(auth_config.jwt, Some(user_id), None)
+            .map(|extractor| extractor.with_mesh(&auth_config.mesh))
     }
 
     /// Create an RS256 extractor from an inline JWKS JSON document (no network).
@@ -128,6 +146,7 @@ impl UserIdExtractor {
         jwks_json: impl AsRef<str>,
     ) -> Result<Self, CommandError> {
         Self::from_parts(auth_config.jwt, None, Some(jwks_json.as_ref()))
+            .map(|extractor| extractor.with_mesh(&auth_config.mesh))
     }
 
     fn from_parts(
@@ -195,6 +214,7 @@ impl UserIdExtractor {
             hs256_issuer: trim_opt(jwt.issuer),
             audience: trim_opt(jwt.audience),
             jwks,
+            gateway_san: None,
         })
     }
 

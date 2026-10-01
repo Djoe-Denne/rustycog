@@ -4,6 +4,7 @@ pub mod extractors;
 mod jwks;
 pub mod jwt;
 pub mod jwt_handler;
+mod mesh_principal;
 pub mod middleware_auth;
 pub mod middleware_permission;
 mod tls;

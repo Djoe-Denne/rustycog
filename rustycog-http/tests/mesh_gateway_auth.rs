@@ -212,6 +212,14 @@ async fn gateway_peer_principal_is_trusted() {
 
     let response = get_with_principal(&gateway, &format!("{}/maybe", server.https), sub).await;
     assert_eq!(response.text().await.unwrap(), sub.to_string());
+
+    let anonymous = gateway
+        .get(format!("{}/maybe", server.https))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), StatusCode::OK);
+    assert_eq!(anonymous.text().await.unwrap(), "anonymous");
 }
 
 #[tokio::test]
@@ -243,8 +251,12 @@ async fn other_peers_cannot_inject_a_principal() {
         get_with_principal(&other, &me, sub).await.status(),
         StatusCode::UNAUTHORIZED
     );
-    let anonymous = get_with_principal(&other, &format!("{}/maybe", server.https), sub).await;
-    assert_eq!(anonymous.text().await.unwrap(), "anonymous");
+    assert_eq!(
+        get_with_principal(&other, &format!("{}/maybe", server.https), sub)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
 
     let no_cert = client(None);
     assert_eq!(
@@ -255,6 +267,12 @@ async fn other_peers_cannot_inject_a_principal() {
     let plain = client(None);
     assert_eq!(
         get_with_principal(&plain, &format!("{}/me", server.http), sub)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        get_with_principal(&plain, &format!("{}/maybe", server.http), sub)
             .await
             .status(),
         StatusCode::UNAUTHORIZED

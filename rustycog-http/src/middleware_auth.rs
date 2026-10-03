@@ -9,7 +9,7 @@ use tracing::debug;
 use uuid::Uuid;
 
 use super::jwt_handler::{JwtPrincipal, UserIdExtractor};
-use super::mesh_principal::gateway_principal;
+use super::mesh_principal::{gateway_principal, require_gateway_peer};
 use super::tls::PeerClientCertificate;
 use std::sync::Arc;
 
@@ -150,18 +150,33 @@ pub async fn auth_middleware(
     Ok(next.run(with_principal(req, principal)).await)
 }
 
-/// Optional authentication middleware that doesn't fail if no auth is provided
+/// Optional authentication middleware.
+///
+/// When `trusted_gateway_san` is set, the mTLS peer must be the gateway.
+/// Missing client certificate or a SAN that is not the gateway is 401.
+/// Gateway SAN plus valid principal headers become the user; missing or
+/// invalid headers continue anonymous (no [`Uuid`] in extensions).
+///
+/// When mesh mode is off, a missing or invalid bearer continues anonymous.
 ///
 /// # Errors
 ///
-/// The signature returns [`StatusCode`] for Axum middleware composition; the
-/// current implementation always continues the request (`Ok`).
+/// Returns [`StatusCode::UNAUTHORIZED`] in mesh mode when the peer is not the
+/// gateway. Otherwise the request continues (`Ok`).
 pub async fn optional_auth_middleware(
     State(user_id_extractor): State<Arc<UserIdExtractor>>,
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
     if let Some(gateway_san) = user_id_extractor.gateway_san() {
+        require_gateway_peer(
+            req.extensions().get::<PeerClientCertificate>(),
+            gateway_san,
+        )
+        .map_err(|reason| {
+            debug!(reason, "Gateway principal rejected");
+            StatusCode::UNAUTHORIZED
+        })?;
         return Ok(match request_gateway_principal(&req, gateway_san) {
             Ok(principal) => next.run(with_principal(req, principal)).await,
             Err(reason) => {

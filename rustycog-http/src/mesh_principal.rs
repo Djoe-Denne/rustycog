@@ -10,6 +10,18 @@ use super::tls::PeerClientCertificate;
 const PRINCIPAL_ISS: &str = "x-principal-iss";
 const PRINCIPAL_SUB: &str = "x-principal-sub";
 
+/// Peer must present a client certificate whose DNS SAN is `gateway_san`.
+pub(crate) fn require_gateway_peer(
+    peer: Option<&PeerClientCertificate>,
+    gateway_san: &str,
+) -> Result<(), &'static str> {
+    let peer = peer.ok_or("no client certificate")?;
+    if !has_dns_san(&peer.der, gateway_san) {
+        return Err("client certificate is not the gateway");
+    }
+    Ok(())
+}
+
 /// Principal recreated by the gateway.
 ///
 /// Accepted only when the mTLS peer certificate carries `gateway_san` as a DNS
@@ -19,10 +31,7 @@ pub(crate) fn gateway_principal(
     headers: &HeaderMap,
     gateway_san: &str,
 ) -> Result<JwtPrincipal, &'static str> {
-    let peer = peer.ok_or("no client certificate")?;
-    if !has_dns_san(&peer.der, gateway_san) {
-        return Err("client certificate is not the gateway");
-    }
+    require_gateway_peer(peer, gateway_san)?;
     let iss = single_header(headers, PRINCIPAL_ISS)?;
     let sub = single_header(headers, PRINCIPAL_SUB)?;
     let sub = Uuid::parse_str(sub).map_err(|_| "x-principal-sub is not a UUID")?;

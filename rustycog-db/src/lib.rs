@@ -51,7 +51,7 @@ impl DbConnectionPool {
             .max_lifetime(Duration::from_secs(8))
             .sqlx_logging(true);
 
-        let write_conn = Database::connect(opt).await?;
+        let write_conn = Arc::new(Database::connect(opt).await?);
 
         // Create read connections (replicas if provided, otherwise use the main connection)
         let mut read_connections = Vec::new();
@@ -59,7 +59,7 @@ impl DbConnectionPool {
         if db_config.read_replicas.is_empty() {
             // Use the write connection for reads if no replicas are provided
             info!("No read replicas specified, using primary database for reads");
-            read_connections.push(Arc::new(write_conn.clone()));
+            read_connections.push(Arc::clone(&write_conn));
         } else {
             // Connect to each read replica
             for (i, replica_url) in db_config.read_replicas.iter().enumerate() {
@@ -86,12 +86,12 @@ impl DbConnectionPool {
             // If all replicas failed, fall back to the write connection
             if read_connections.is_empty() {
                 warn!("All read replicas failed to connect, falling back to primary database for reads");
-                read_connections.push(Arc::new(write_conn.clone()));
+                read_connections.push(Arc::clone(&write_conn));
             }
         }
 
         Ok(Self {
-            write_connection: Arc::new(write_conn),
+            write_connection: write_conn,
             read_connections,
             current_read_index: std::sync::atomic::AtomicUsize::new(0),
         })

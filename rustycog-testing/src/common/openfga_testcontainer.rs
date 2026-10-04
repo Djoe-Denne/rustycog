@@ -36,15 +36,9 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use testcontainers::{
-    core::ContainerPort, runners::AsyncRunner, ContainerAsync, GenericImage, ImageExt,
-};
+use testcontainers::{core::ContainerPort, runners::AsyncRunner, GenericImage, ImageExt};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
-
-/// Container name used for the singleton fixture. Must be unique per fixture
-/// so `cleanup_existing_openfga_container` only tears down its own container.
-const CONTAINER_NAME: &str = "openfga_test-fga";
 
 /// `OpenFGA` Docker image tag pinned for reproducibility. Bump deliberately.
 const OPENFGA_IMAGE_TAG: &str = "v1.5.0";
@@ -62,7 +56,7 @@ static OPENFGA_CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 /// [`Self::cleanup`] for explicit teardown. The container is otherwise
 /// dropped along with the singleton when the test process exits.
 pub struct TestOpenFgaContainer {
-    container: ContainerAsync<GenericImage>,
+    container: super::fixture_runtime::OwnedContainer,
     pub base_url: String,
     pub port: u16,
 }
@@ -99,6 +93,8 @@ impl TestOpenFgaContainer {
 /// owning `TestFixture` for the request lifetime.
 #[derive(Clone)]
 pub struct TestOpenFga {
+    _container: Arc<TestOpenFgaContainer>,
+    host: String,
     pub client: reqwest::Client,
     pub base_url: String,
     pub port: u16,
@@ -108,6 +104,35 @@ pub struct TestOpenFga {
 }
 
 impl TestOpenFga {
+    /// Release the shared owned container only after all consumers have dropped.
+    ///
+    /// # Errors
+    /// Returns an error while consumers still hold a fixture lease.
+    pub async fn cleanup_container() -> Result<(), Box<dyn std::error::Error>> {
+        // Still release known owned handles if another creation is UNKNOWN.
+        let _ = super::fixture_runtime::join_fixture_creations().await;
+        let Some(singleton) = TEST_OPENFGA_CONTAINER.get() else {
+            return super::fixture_runtime::join_fixture_creations()
+                .await
+                .map_err(Into::into);
+        };
+        let mut guard = singleton.lock().await;
+        match super::fixture_runtime::take_unshared(&mut guard) {
+            Ok(None) => super::fixture_runtime::join_fixture_creations()
+                .await
+                .map_err(Into::into),
+            Ok(Some(container)) => {
+                container.cleanup().await;
+                super::fixture_runtime::join_fixture_creations()
+                    .await
+                    .map_err(Into::into)
+            }
+            Err(arc) => {
+                arc.container.deferred();
+                Err("OpenFGA cleanup deferred: active consumers".into())
+            }
+        }
+    }
     /// Get or create the global test `OpenFGA` fixture.
     ///
     /// The first call starts the singleton container, creates a store, and
@@ -120,7 +145,7 @@ impl TestOpenFga {
     /// Returns an error if the singleton container cannot be started, if the
     /// HTTP client cannot be built, or if store and model provisioning fails.
     pub async fn new(model_json: &'static str) -> Result<Self, Box<dyn std::error::Error>> {
-        let (_container, base_url, port) = get_or_create_test_openfga_container().await?;
+        let (container, base_url, port) = get_or_create_test_openfga_container().await?;
 
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
@@ -129,9 +154,12 @@ impl TestOpenFga {
         let (store_id, authorization_model_id) =
             provision_store_and_model(&client, &base_url, model_json).await?;
 
-        publish_env(port, &store_id, &authorization_model_id);
+        let host = super::fixture_runtime::endpoint()?.host;
+        publish_env(&host, port, &store_id, &authorization_model_id);
 
         Ok(Self {
+            _container: container,
+            host,
             client,
             base_url,
             port,
@@ -169,7 +197,7 @@ impl TestOpenFga {
     pub fn client_config(&self) -> OpenFgaClientConfig {
         OpenFgaClientConfig {
             scheme: "http".to_string(),
-            host: "127.0.0.1".to_string(),
+            host: self.host.clone(),
             port: self.port,
             store_id: self.store_id.clone(),
             authorization_model_id: Some(self.authorization_model_id.clone()),
@@ -446,7 +474,12 @@ impl TestOpenFga {
             provision_store_and_model(&self.client, &self.base_url, self.model_json).await?;
         self.store_id = store_id;
         self.authorization_model_id = model_id;
-        publish_env(self.port, &self.store_id, &self.authorization_model_id);
+        publish_env(
+            &super::fixture_runtime::endpoint()?.host,
+            self.port,
+            &self.store_id,
+            &self.authorization_model_id,
+        );
         Ok(())
     }
 }
@@ -533,7 +566,7 @@ async fn get_or_create_test_openfga_container(
 
     info!("Creating new OpenFGA test container");
 
-    cleanup_existing_openfga_container();
+    let endpoint = super::fixture_runtime::endpoint()?;
 
     // Clear only the OpenFGA port cache so a fresh container gets a fresh
     // random port instead of pointing at a previously-resolved port whose
@@ -558,21 +591,24 @@ async fn get_or_create_test_openfga_container(
         });
     let port = openfga_config.actual_port();
 
+    let attempt = super::fixture_runtime::Attempt::prepare("openfga", port).await?;
     let image = GenericImage::new("openfga/openfga", OPENFGA_IMAGE_TAG)
         .with_cmd(vec![
             "run".to_string(),
             "--datastore-engine=memory".to_string(),
         ])
-        .with_container_name(CONTAINER_NAME)
+        .with_container_name(attempt.name())
         .with_mapped_port(port, ContainerPort::Tcp(8080));
 
     info!("Starting OpenFGA container on port {}...", port);
-    let container = image.start().await?;
+    let container = attempt.start(image.start()).await?;
+    let port = container.mapped_port(ContainerPort::Tcp(8080)).await?;
 
-    let base_url = format!("http://127.0.0.1:{port}");
+    let base_url = endpoint.http(port)?;
 
     info!("OpenFGA container started; waiting for /healthz");
     wait_for_openfga(&base_url).await?;
+    container.ready()?;
 
     let test_container = Arc::new(TestOpenFgaContainer {
         container,
@@ -585,19 +621,6 @@ async fn get_or_create_test_openfga_container(
     register_openfga_cleanup_handler();
 
     Ok((test_container, base_url, port))
-}
-
-/// Defensive shellout to remove any leaked container from a prior run.
-fn cleanup_existing_openfga_container() {
-    use std::process::Command;
-    debug!("Checking for existing OpenFGA test container '{CONTAINER_NAME}'");
-    let _ = Command::new("docker")
-        .args(["stop", CONTAINER_NAME])
-        .output();
-    let _ = Command::new("docker")
-        .args(["rm", "-f", CONTAINER_NAME])
-        .output();
-    debug!("Cleaned up container: {CONTAINER_NAME}");
 }
 
 fn register_openfga_cleanup_handler() {
@@ -697,7 +720,7 @@ async fn provision_store_and_model(
 /// fixtures. The `port` here is the host port we already bound the
 /// container to via `with_mapped_port(...)`, so the consumer never needs to
 /// hit `actual_port()`'s random-port fallback.
-fn publish_env(port: u16, store_id: &str, authorization_model_id: &str) {
+fn publish_env(host: &str, port: u16, store_id: &str, authorization_model_id: &str) {
     const PREFIXES: &[&str] = &["MANIFESTO", "HIVE", "TELEGRAPH", "SENTINEL_SYNC"];
     let port_str = port.to_string();
     unsafe {
@@ -706,26 +729,33 @@ fn publish_env(port: u16, store_id: &str, authorization_model_id: &str) {
             // separator and `__` for nested fields, e.g.
             // `HIVE_OPENFGA__STORE_ID` -> `[openfga].store_id`.
             let canonical = format!("{prefix}_OPENFGA");
-            publish_env_for_prefix(&canonical, &port_str, store_id, authorization_model_id);
+            publish_env_for_prefix(
+                &canonical,
+                host,
+                &port_str,
+                store_id,
+                authorization_model_id,
+            );
 
             // Keep publishing the historical double-underscore shape while
             // in-flight docs/tests converge. It is ignored by the current
             // config loader but harmless for callers that might read env vars
             // directly.
             let legacy = format!("{prefix}__OPENFGA");
-            publish_env_for_prefix(&legacy, &port_str, store_id, authorization_model_id);
+            publish_env_for_prefix(&legacy, host, &port_str, store_id, authorization_model_id);
         }
     }
 }
 
 unsafe fn publish_env_for_prefix(
     env_prefix: &str,
+    host: &str,
     port: &str,
     store_id: &str,
     authorization_model_id: &str,
 ) {
     std::env::set_var(format!("{env_prefix}__SCHEME"), "http");
-    std::env::set_var(format!("{env_prefix}__HOST"), "127.0.0.1");
+    std::env::set_var(format!("{env_prefix}__HOST"), host);
     std::env::set_var(format!("{env_prefix}__PORT"), port);
     std::env::set_var(format!("{env_prefix}__STORE_ID"), store_id);
     std::env::set_var(

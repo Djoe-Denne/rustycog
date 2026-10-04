@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
-use testcontainers::{runners::AsyncRunner, ContainerAsync, GenericImage, ImageExt};
+use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use uuid;
@@ -27,7 +27,7 @@ static SQS_CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Test SQS container wrapper
 pub struct TestSqsContainer {
-    container: ContainerAsync<GenericImage>,
+    container: super::fixture_runtime::OwnedContainer,
     pub endpoint_url: String,
     pub port: u16,
 }
@@ -52,6 +52,7 @@ impl TestSqsContainer {
 
 /// Test SQS fixture providing SQS connection and utilities
 pub struct TestSqs {
+    _container: Arc<TestSqsContainer>,
     pub client: Client,
     pub endpoint_url: String,
     pub queue_url: String,
@@ -68,15 +69,13 @@ impl TestSqs {
     /// client cannot be created, LocalStack is not ready, or test queues cannot
     /// be created.
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let (_container, sqs_config) = get_or_create_test_sqs_container().await?;
+        let (container, sqs_config) = get_or_create_test_sqs_container().await?;
         let host = sqs_config.host.clone();
         let port = sqs_config.actual_port();
         let region = sqs_config.region.clone();
 
         // Parse the endpoint URL to get host and port
-        let endpoint_url = sqs_config
-            .endpoint_url()
-            .unwrap_or_else(|| "http://localhost:4566".to_string());
+        let endpoint_url = container.endpoint_url.clone();
 
         let access_key_id = sqs_config
             .access_key_id
@@ -109,10 +108,16 @@ impl TestSqs {
         Self::wait_for_localstack(&endpoint_url).await?;
 
         // Create test queues using configured queue names
-        let queue_urls = Self::create_test_queues(&client, &sqs_config).await?;
+        let mut queue_urls = Self::create_test_queues(&client, &sqs_config).await?;
+        let endpoint = super::fixture_runtime::endpoint()?;
+        for url in queue_urls.values_mut() {
+            *url = endpoint.rewrite_url(url, port)?;
+        }
         let queue_url = Self::primary_queue_url(&sqs_config, &queue_urls)?;
+        container.container.ready()?;
 
         Ok(Self {
+            _container: container,
             client,
             endpoint_url,
             queue_url,
@@ -152,8 +157,8 @@ impl TestSqs {
 
         // Extract host and port from endpoint URL
         let url = url::Url::parse(endpoint_url)?;
-        let host = url.host_str().unwrap_or("localhost");
-        let port = url.port().unwrap_or(4566);
+        let host = url.host_str().ok_or("SQS endpoint missing host")?;
+        let port = url.port().ok_or("SQS endpoint missing mapped port")?;
 
         while attempts < max_attempts {
             // Try to connect to LocalStack
@@ -652,7 +657,7 @@ async fn get_or_create_test_sqs_container(
     if let Some(ref container) = *container_guard {
         // If container exists, we still need to load the config to return it
         let queue_config = load_config_part::<QueueConfig>("queue")?;
-        let sqs_config = match &queue_config {
+        let mut sqs_config = match &queue_config {
             QueueConfig::Sqs(sqs_config) => sqs_config.clone(),
             QueueConfig::Kafka(_) => {
                 return Err("Configuration is set to Kafka, but SQS test container requires SQS configuration. Environment variables may not be set correctly.".into());
@@ -661,20 +666,23 @@ async fn get_or_create_test_sqs_container(
                 return Err("Queue is disabled, but SQS test container requires SQS configuration. Environment variables may not be set correctly.".into());
             }
         };
+        sqs_config.host = super::fixture_runtime::endpoint()?.host;
+        sqs_config.port = container.port;
+        sqs_config.endpoint_url = Some(container.endpoint_url.clone());
         return Ok((container.clone(), sqs_config));
     }
 
     info!("Creating new SQS LocalStack test container");
 
-    // Clean up any existing container
-    cleanup_existing_sqs_container();
+    // Use only the explicitly classified runner endpoint.
+    let endpoint = super::fixture_runtime::endpoint()?;
 
     // Clear only the SQS port cache to ensure fresh random port generation
     SqsConfig::clear_port_cache();
 
     // Load configuration to understand SQS settings
     let queue_config = load_config_part::<QueueConfig>("queue")?;
-    let sqs_config = match &queue_config {
+    let mut sqs_config = match &queue_config {
         QueueConfig::Sqs(sqs_config) => sqs_config.clone(),
         QueueConfig::Kafka(_) => {
             return Err("Configuration is set to Kafka, but SQS test container requires SQS configuration. Environment variables may not be set correctly.".into());
@@ -688,20 +696,27 @@ async fn get_or_create_test_sqs_container(
     let sqs_port = sqs_config.actual_port();
 
     // Create LocalStack container with SQS service
+    let attempt = super::fixture_runtime::Attempt::prepare("sqs", sqs_port).await?;
     let localstack_image = GenericImage::new("localstack/localstack", "3.0.2")
         .with_env_var("SERVICES", "sqs")
         .with_env_var("DEBUG", "1")
         .with_env_var("DATA_DIR", "/tmp/localstack/data")
         .with_env_var("DOCKER_HOST", "unix:///var/run/docker.sock")
         .with_env_var("HOST_TMP_FOLDER", "/tmp")
-        .with_container_name("iam_test-localstack-sqs")
+        .with_container_name(attempt.name())
         .with_mapped_port(sqs_port, testcontainers::core::ContainerPort::Tcp(4566)); // LocalStack default port
 
     // Start LocalStack
     info!("Starting LocalStack SQS container on port {}...", sqs_port);
-    let sqs_container = localstack_image.start().await?;
+    let sqs_container = attempt.start(localstack_image.start()).await?;
+    let sqs_port = sqs_container
+        .mapped_port(testcontainers::core::ContainerPort::Tcp(4566))
+        .await?;
 
-    let endpoint_url = format!("http://localhost:{sqs_port}");
+    let endpoint_url = endpoint.http(sqs_port)?;
+    sqs_config.host = endpoint.host.clone();
+    sqs_config.port = sqs_port;
+    sqs_config.endpoint_url = Some(endpoint_url.clone());
 
     info!("Test SQS LocalStack container started");
     info!("Endpoint URL: {}", endpoint_url);
@@ -718,29 +733,6 @@ async fn get_or_create_test_sqs_container(
     register_sqs_cleanup_handler();
 
     Ok((test_container, sqs_config))
-}
-
-/// Clean up any existing SQS containers
-fn cleanup_existing_sqs_container() {
-    use std::process::Command;
-
-    debug!("Checking for existing SQS LocalStack test containers");
-
-    let containers = ["iam_test-localstack-sqs"];
-
-    for container_name in &containers {
-        // Stop the container
-        let _ = Command::new("docker")
-            .args(["stop", container_name])
-            .output();
-
-        // Remove the container
-        let _ = Command::new("docker")
-            .args(["rm", "-f", container_name])
-            .output();
-
-        debug!("Cleaned up container: {}", container_name);
-    }
 }
 
 /// Register cleanup handler for SQS containers
@@ -825,25 +817,30 @@ impl TestSqsFixture {
     ///
     /// # Errors
     ///
-    /// Returns an error if cleanup cannot complete. The current implementation
-    /// always returns `Ok(())` after a best-effort shutdown.
+    /// Returns an error for active consumers, unresolved creation identity, or
+    /// unverified teardown. Foreign resources are never adopted or removed.
     pub async fn cleanup_container() -> Result<(), Box<dyn std::error::Error>> {
+        // Still release known owned handles if another creation is UNKNOWN.
+        let _ = super::fixture_runtime::join_fixture_creations().await;
         let container_mutex = TEST_SQS_CONTAINER.get();
         if let Some(container_mutex) = container_mutex {
             let mut container_guard = container_mutex.lock().await;
-            if let Some(container_arc) = container_guard.take() {
+            if container_guard.is_some() {
                 info!("Manually cleaning up test SQS container");
 
-                if let Ok(container) = Arc::try_unwrap(container_arc) {
-                    container.cleanup().await;
-                    info!("Test SQS container cleanup completed");
-                } else {
-                    warn!("Could not cleanup SQS container: still has references");
-                    // Fallback cleanup using Docker commands
-                    cleanup_existing_sqs_container();
+                match super::fixture_runtime::take_unshared(&mut container_guard) {
+                    Ok(None) => {}
+                    Ok(Some(container)) => {
+                        container.cleanup().await;
+                    }
+                    Err(arc) => {
+                        arc.container.deferred();
+                        return Err("SQS cleanup deferred: active consumers".into());
+                    }
                 }
             }
         }
+        super::fixture_runtime::join_fixture_creations().await?;
         Ok(())
     }
 }

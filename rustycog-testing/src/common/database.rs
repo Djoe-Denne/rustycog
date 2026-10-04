@@ -12,7 +12,7 @@ use sea_orm::{Database, DatabaseConnection, DbErr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use testcontainers::{runners::AsyncRunner, ContainerAsync, GenericImage, ImageExt};
+use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -24,7 +24,7 @@ static CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Test database container wrapper
 pub struct TestDatabaseContainer {
-    container: ContainerAsync<GenericImage>,
+    container: super::fixture_runtime::OwnedContainer,
     pub database_url: String,
     pub port: u16,
 }
@@ -49,6 +49,7 @@ impl TestDatabaseContainer {
 
 /// Test database fixture providing database connection and cleanup utilities
 pub struct TestDatabase {
+    _container: Arc<TestDatabaseContainer>,
     pub pool: DbConnectionPool,
     pub connection: Arc<DatabaseConnection>,
     pub database_url: String,
@@ -77,6 +78,7 @@ impl TestDatabase {
         Self::run_migrations(descriptor, &connection).await?;
 
         Ok(Self {
+            _container: container,
             pool,
             connection,
             database_url,
@@ -139,8 +141,8 @@ async fn get_or_create_test_container() -> Result<Arc<TestDatabaseContainer>, Db
     // Don't clear all caches as that would interfere with Kafka test containers
     DatabaseConfig::clear_port_cache();
 
-    // First, try to clean up any existing container with the same name
-    cleanup_existing_container();
+    // Explicit runner endpoint; never evict a discovered container.
+    let endpoint = super::fixture_runtime::endpoint().map_err(DbErr::Custom)?;
 
     // Load test configuration to get database settings
     let db_config = create_base_test_config()?;
@@ -154,28 +156,36 @@ async fn get_or_create_test_container() -> Result<Arc<TestDatabaseContainer>, Db
     };
 
     // Create PostgreSQL container using GenericImage with configuration-based settings
+    let attempt = super::fixture_runtime::Attempt::prepare("postgres", host_port)
+        .await
+        .map_err(DbErr::Custom)?;
     let postgres_image = GenericImage::new("postgres", "15-alpine")
         .with_env_var("POSTGRES_DB", &db_config.db)
         .with_env_var("POSTGRES_USER", &db_config.creds.username)
         .with_env_var("POSTGRES_PASSWORD", &db_config.creds.password)
-        .with_container_name("test-db") // Static name for easy cleanup
+        .with_container_name(attempt.name())
         .with_mapped_port(host_port, testcontainers::core::ContainerPort::Tcp(5432)); // Map host port to container port 5432
 
-    let container = postgres_image
-        .start()
+    let container = attempt
+        .start(postgres_image.start())
         .await
         .map_err(|e| DbErr::Custom(format!("Failed to start container: {e}")))?;
 
+    let host_port = container
+        .mapped_port(testcontainers::core::ContainerPort::Tcp(5432))
+        .await
+        .map_err(|e| DbErr::Custom(e.to_string()))?;
     let database_url = format!(
         "postgres://{}:{}@{}:{}/{}",
-        db_config.creds.username, db_config.creds.password, db_config.host, host_port, db_config.db
+        db_config.creds.username, db_config.creds.password, endpoint.host, host_port, db_config.db
     );
 
     info!("Test database container started on port {}", host_port);
-    info!("Database URL: {}", database_url);
+    // Do not log the connection URL, which contains credentials.
 
     // Wait for database to be ready
     wait_for_database(&database_url).await?;
+    container.ready().map_err(DbErr::Custom)?;
 
     let test_container = Arc::new(TestDatabaseContainer {
         container,
@@ -189,45 +199,6 @@ async fn get_or_create_test_container() -> Result<Arc<TestDatabaseContainer>, Db
     register_cleanup_handler();
 
     Ok(test_container)
-}
-
-/// Clean up any existing container with the test name
-fn cleanup_existing_container() {
-    use std::process::Command;
-
-    debug!("Checking for existing test container 'test-db'");
-
-    // Try to stop the container if it's running
-    let stop_result = Command::new("docker").args(["stop", "test-db"]).output();
-
-    match stop_result {
-        Ok(output) if output.status.success() => {
-            debug!("Stopped existing container 'test-db'");
-        }
-        Ok(_) => {
-            debug!("Container 'test-db' was not running or doesn't exist");
-        }
-        Err(e) => {
-            debug!("Failed to stop container: {}", e);
-        }
-    }
-
-    // Try to remove the container
-    let rm_result = Command::new("docker")
-        .args(["rm", "-f", "test-db"])
-        .output();
-
-    match rm_result {
-        Ok(output) if output.status.success() => {
-            debug!("Removed existing container 'test-db'");
-        }
-        Ok(_) => {
-            debug!("Container 'test-db' was already removed or doesn't exist");
-        }
-        Err(e) => {
-            debug!("Failed to remove container: {}", e);
-        }
-    }
 }
 
 /// Wait for the database to be ready for connections
@@ -280,8 +251,8 @@ async fn wait_for_database(database_url: &str) -> Result<(), DbErr> {
 fn register_cleanup_handler() {
     extern "C" fn cleanup_on_exit() {
         debug!("Process exiting, attempting to cleanup test database container...");
-        // Note: We can't do async cleanup here, but the container will be cleaned up
-        // by Docker eventually. This is just for logging.
+        // Logging is not cleanup proof. The parent must join creations before
+        // runtime shutdown and verify its exact-ID ledger against Docker.
     }
 
     // Only register once
@@ -291,17 +262,7 @@ fn register_cleanup_handler() {
 
     info!("Registering test database container cleanup handler");
 
-    // Register cleanup for Ctrl+C and other signals
-    let _ = ctrlc::set_handler(move || {
-        use std::process::Command;
-
-        info!("Received termination signal, cleaning up test database container");
-
-        let _ = Command::new("docker").args(["stop", "test-db"]).output();
-        let _ = Command::new("docker").args(["rm", "test-db"]).output();
-
-        std::process::exit(0);
-    });
+    // Signals must not infer ownership by a static name or bypass joined cleanup.
 
     unsafe {
         libc::atexit(cleanup_on_exit);
@@ -442,65 +403,37 @@ impl TestFixture {
     ///
     /// # Errors
     ///
-    /// The signature returns `Result` for API compatibility. Success is also
-    /// returned when no container is initialized or already taken.
+    /// Returns an error for active consumers, unresolved creations or unverified
+    /// teardown. No container is also success when the creation barrier is clean.
     pub async fn cleanup_container() -> Result<(), DbErr> {
+        // Join cancelled creations, but an unrelated UNKNOWN must not prevent
+        // releasing this proven-owned handle. Recheck/report after teardown.
+        let _ = super::fixture_runtime::join_fixture_creations().await;
         let Some(container_mutex) = TEST_CONTAINER.get() else {
             debug!("Test container mutex not initialized");
-            return Ok(());
+            return super::fixture_runtime::join_fixture_creations()
+                .await
+                .map_err(DbErr::Custom);
         };
 
         let mut container_guard = container_mutex.lock().await;
-        let Some(container_arc) = container_guard.take() else {
-            debug!("No test container to cleanup");
-            return Ok(());
-        };
-        drop(container_guard);
-
         info!("Manually cleaning up test database container");
-        cleanup_test_db_container(container_arc).await;
-        Ok(())
-    }
-}
-
-async fn cleanup_test_db_container(container_arc: Arc<TestDatabaseContainer>) {
-    match Arc::try_unwrap(container_arc) {
-        Ok(container) => {
-            container.cleanup().await;
-            info!("Test database container cleanup completed");
-        }
-        Err(arc) => {
-            warn!(
-                "Could not cleanup container: still has {} references",
-                Arc::strong_count(&arc)
-            );
-            info!("Attempting fallback cleanup using Docker commands");
-            cleanup_test_db_container_with_docker();
-        }
-    }
-}
-
-fn cleanup_test_db_container_with_docker() {
-    const CONTAINER_NAME: &str = "test-db";
-    run_docker_cleanup_command("stop", &[CONTAINER_NAME], "stopped");
-    run_docker_cleanup_command("rm", &["-f", CONTAINER_NAME], "removed");
-}
-
-fn run_docker_cleanup_command(command: &str, args: &[&str], success_action: &str) {
-    match std::process::Command::new("docker")
-        .arg(command)
-        .args(args)
-        .output()
-    {
-        Ok(output) if output.status.success() => {
-            info!("Successfully {} container {}", success_action, "test-db");
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!("Failed to {} container test-db: {}", command, stderr);
-        }
-        Err(e) => {
-            warn!("Failed to execute docker {}: {}", command, e);
+        match super::fixture_runtime::take_unshared(&mut container_guard) {
+            Ok(None) => super::fixture_runtime::join_fixture_creations()
+                .await
+                .map_err(DbErr::Custom),
+            Ok(Some(container)) => {
+                container.cleanup().await;
+                super::fixture_runtime::join_fixture_creations()
+                    .await
+                    .map_err(DbErr::Custom)
+            }
+            Err(arc) => {
+                arc.container.deferred();
+                Err(DbErr::Custom(
+                    "database cleanup deferred: active consumers".into(),
+                ))
+            }
         }
     }
 }

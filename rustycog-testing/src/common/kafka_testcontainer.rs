@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
-use testcontainers::{runners::AsyncRunner, ContainerAsync, GenericImage, ImageExt};
+use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use uuid;
@@ -33,7 +33,7 @@ fn kafka_broker_addresses(
 
 /// Test Kafka container wrapper
 pub struct TestKafkaContainer {
-    container: ContainerAsync<GenericImage>,
+    container: super::fixture_runtime::OwnedContainer,
     pub brokers: String,
     pub port: u16,
 }
@@ -58,6 +58,7 @@ impl TestKafkaContainer {
 
 /// Test Kafka fixture providing Kafka connection and utilities
 pub struct TestKafka {
+    _container: Arc<TestKafkaContainer>,
     pub brokers: String,
     pub topic: String,
 }
@@ -86,16 +87,15 @@ impl TestKafka {
                 std::env::set_var("RUSTYCOG_KAFKA__USER_EVENTS_TOPIC", &topic);
             }
         } else {
-            unsafe {
-                std::env::set_var("RUSTYCOG_KAFKA__HOST", "localhost");
-                std::env::set_var("RUSTYCOG_KAFKA__PORT", "9092");
-                std::env::set_var("RUSTYCOG_KAFKA__ENABLED", "true");
-                std::env::set_var("RUSTYCOG_KAFKA__USER_EVENTS_TOPIC", &topic);
-            }
+            return Err("Kafka fixture has invalid mapped broker endpoint".into());
         }
 
         Self::wait_for_kafka(&brokers).await?;
-        Ok(Self { brokers, topic })
+        Ok(Self {
+            _container: container,
+            brokers,
+            topic,
+        })
     }
 
     /// Wait for Kafka to be ready using a simple TCP connection test
@@ -193,11 +193,13 @@ async fn get_or_create_test_kafka_container(
     }
 
     info!("Creating new Kafka test container");
-    cleanup_existing_kafka_container();
+    let endpoint = super::fixture_runtime::endpoint()?;
     KafkaConfig::clear_port_cache();
     let kafka_config = load_config_part::<KafkaConfig>("kafka")?;
     let kafka_port = kafka_config.actual_port();
 
+    let attempt = super::fixture_runtime::Attempt::prepare("kafka", kafka_port).await?;
+    let advertised = endpoint.authority(kafka_port)?;
     let kafka_image = GenericImage::new("apache/kafka", "3.7.0")
         .with_env_var("KAFKA_NODE_ID", "1")
         .with_env_var(
@@ -206,7 +208,7 @@ async fn get_or_create_test_kafka_container(
         )
         .with_env_var(
             "KAFKA_ADVERTISED_LISTENERS",
-            format!("PLAINTEXT://localhost:{kafka_port},PLAINTEXT_HOST://localhost:{kafka_port}"),
+            format!("PLAINTEXT://localhost:29092,PLAINTEXT_HOST://{advertised}"),
         )
         .with_env_var(
             "KAFKA_LISTENERS",
@@ -224,18 +226,25 @@ async fn get_or_create_test_kafka_container(
         .with_env_var("KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS", "0")
         .with_env_var("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "true")
         .with_env_var("CLUSTER_ID", "MkU3OEVBNTcwNTJENDM2Qk")
-        .with_container_name("iam_test-kafka")
+        .with_container_name(attempt.name())
         .with_mapped_port(
             kafka_port,
             testcontainers::core::ContainerPort::Tcp(kafka_port),
         );
 
     info!("Starting Kafka container on port {}...", kafka_port);
-    let kafka_container = kafka_image.start().await?;
-    let brokers = format!("localhost:{kafka_port}");
+    let kafka_container = attempt.start(kafka_image.start()).await?;
+    let mapped_port = kafka_container
+        .mapped_port(testcontainers::core::ContainerPort::Tcp(kafka_port))
+        .await?;
+    if mapped_port != kafka_port {
+        return Err("Kafka mapped port differs from advertised port; STOP".into());
+    }
+    let brokers = endpoint.authority(mapped_port)?;
     info!("Test Kafka container started");
     info!("Brokers: {}", brokers);
     TestKafka::wait_for_kafka(&brokers).await?;
+    kafka_container.ready()?;
 
     let test_container = Arc::new(TestKafkaContainer {
         container: kafka_container,
@@ -245,22 +254,6 @@ async fn get_or_create_test_kafka_container(
     *container_guard = Some(test_container.clone());
     register_kafka_cleanup_handler();
     Ok(test_container)
-}
-
-/// Clean up any existing Kafka containers
-fn cleanup_existing_kafka_container() {
-    use std::process::Command;
-    debug!("Checking for existing Kafka test containers");
-    let containers = ["iam_test-kafka"];
-    for container_name in &containers {
-        let _ = Command::new("docker")
-            .args(["stop", container_name])
-            .output();
-        let _ = Command::new("docker")
-            .args(["rm", "-f", container_name])
-            .output();
-        debug!("Cleaned up container: {}", container_name);
-    }
 }
 
 /// Register cleanup handler for Kafka containers
@@ -318,23 +311,29 @@ impl TestKafkaFixture {
     ///
     /// # Errors
     ///
-    /// Returns an error if cleanup cannot complete. The current implementation
-    /// always returns `Ok(())` after a best-effort shutdown.
+    /// Returns an error for active consumers, unresolved creation identity, or
+    /// unverified teardown. Foreign resources are never adopted or removed.
     pub async fn cleanup_container() -> Result<(), Box<dyn std::error::Error>> {
+        // Still release known owned handles if another creation is UNKNOWN.
+        let _ = super::fixture_runtime::join_fixture_creations().await;
         let container_mutex = TEST_KAFKA_CONTAINER.get();
         if let Some(container_mutex) = container_mutex {
             let mut container_guard = container_mutex.lock().await;
-            if let Some(container_arc) = container_guard.take() {
+            if container_guard.is_some() {
                 info!("Manually cleaning up test Kafka container");
-                if let Ok(container) = Arc::try_unwrap(container_arc) {
-                    container.cleanup().await;
-                    info!("Test Kafka container cleanup completed");
-                } else {
-                    warn!("Could not cleanup Kafka container: still has references");
-                    cleanup_existing_kafka_container();
+                match super::fixture_runtime::take_unshared(&mut container_guard) {
+                    Ok(None) => {}
+                    Ok(Some(container)) => {
+                        container.cleanup().await;
+                    }
+                    Err(arc) => {
+                        arc.container.deferred();
+                        return Err("Kafka cleanup deferred: active consumers".into());
+                    }
                 }
             }
         }
+        super::fixture_runtime::join_fixture_creations().await?;
         Ok(())
     }
 }

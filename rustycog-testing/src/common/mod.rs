@@ -1,4 +1,6 @@
 pub mod database;
+mod fixture_runtime;
+pub use fixture_runtime::join_fixture_creations;
 pub mod db_utils;
 pub mod http_test;
 pub mod mock_event_publisher;

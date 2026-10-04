@@ -403,3 +403,78 @@ async fn matching_http_and_tls_port_binds_tls_only() {
 
     handle.abort();
 }
+
+/// Keep the failing address occupied until serve_router has returned. The other
+/// address is chosen with an owned reservation, never a fixed/global test port.
+/// A TCP probe gives runnable sibling tasks a transport polling opportunity;
+/// successful exclusive rebind, not a TLS/HTTP request error, proves release.
+async fn assert_dual_bind_conflict_releases_sibling(tls_fails: bool) {
+    install_crypto();
+    let pki = generate_pki();
+    let occupied = TcpListener::bind("127.0.0.1:0").expect("owned conflict listener");
+    let occupied_address = occupied.local_addr().expect("conflict address");
+    let sibling_reservation = TcpListener::bind("127.0.0.1:0").expect("owned sibling reservation");
+    let sibling_address = sibling_reservation.local_addr().expect("sibling address");
+    assert_ne!(occupied_address, sibling_address);
+    let (http_port, tls_port) = if tls_fails {
+        (sibling_address.port(), occupied_address.port())
+    } else {
+        (occupied_address.port(), sibling_address.port())
+    };
+    // Nonempty, valid CA/cert/key exercises the real dual-bind branch without
+    // async certificate-file loading delaying a detached sibling's bind.
+    let config = dual_bind_config(&pki, http_port, pki.client_ca_path.clone(), tls_port);
+    drop(sibling_reservation);
+    let mut serving = spawn_server(config).await;
+    let completed = tokio::time::timeout(Duration::from_secs(5), &mut serving).await;
+    let (returned_error, deliberate_bind_error) = match completed {
+        Ok(Ok(Err(error))) => {
+            let bind_error = error.chain().any(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::AddrInUse)
+            });
+            (true, bind_error)
+        }
+        Ok(_) => (false, false),
+        Err(_) => {
+            // Always join our exact task before any assertion/PKI release.
+            serving.abort();
+            let _ = serving.await;
+            (false, false)
+        }
+    };
+    let sibling_connect = tokio::time::timeout(
+        Duration::from_secs(1),
+        tokio::net::TcpStream::connect(sibling_address),
+    )
+    .await;
+    let sibling_accepted = matches!(&sibling_connect, Ok(Ok(_)));
+    // Close any probe stream before taking the bind snapshot and asserting.
+    drop(sibling_connect);
+    let sibling_rebound = TcpListener::bind(sibling_address);
+    let sibling_released = sibling_rebound.is_ok();
+    // Drop all test-owned sockets before assertions, including mutant failures.
+    drop(sibling_rebound);
+    drop(occupied);
+    assert!(
+        returned_error,
+        "dual-bind conflict must return an error within the bound, not hang or silently succeed"
+    );
+    assert!(deliberate_bind_error, "failure must be AddrInUse from the deliberate reservation, not certificate/configuration setup");
+    assert!(
+        !sibling_accepted,
+        "a detached sibling must not keep accepting after serve_router failed"
+    );
+    assert!(sibling_released, "the sibling address must be exclusively bindable after the failure; a connection error alone is not release proof");
+}
+
+#[tokio::test]
+async fn dual_bind_tls_bind_conflict_releases_http_listener() {
+    assert_dual_bind_conflict_releases_sibling(true).await;
+}
+
+#[tokio::test]
+async fn dual_bind_http_bind_conflict_does_not_leave_tls_listener() {
+    assert_dual_bind_conflict_releases_sibling(false).await;
+}

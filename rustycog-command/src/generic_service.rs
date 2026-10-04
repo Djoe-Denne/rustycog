@@ -27,6 +27,20 @@ impl GenericCommandService {
         self.registry.execute_command(command, context).await
     }
 
+    /// Dispatch a non-replayable command at most once, without cloning it.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, dispatch, handler or timeout errors unchanged. No
+    /// automatic retry occurs, even if the failure is normally retryable.
+    pub async fn execute_once<C: Command + 'static>(
+        &self,
+        command: C,
+        context: CommandContext,
+    ) -> Result<C::Result, CommandError> {
+        self.registry.execute_command_once(command, context).await
+    }
+
     /// List all available command types
     #[must_use]
     pub fn list_available_commands(&self) -> Vec<String> {
@@ -45,6 +59,146 @@ impl Clone for GenericCommandService {
         Self {
             registry: self.registry.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod one_shot_tests {
+    use super::*;
+    use crate::command::{
+        registry::{CommandErrorMapper, CommandRegistryBuilder, RegistryConfig},
+        CommandHandler,
+    };
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use uuid::Uuid;
+
+    // Deliberately not Clone: represents a consumed, non-replayable capability.
+    #[derive(Debug)]
+    struct NonCloneCommand {
+        valid: bool,
+    }
+
+    impl Command for NonCloneCommand {
+        type Result = ();
+        fn command_type(&self) -> &'static str {
+            "one_shot"
+        }
+        fn command_id(&self) -> Uuid {
+            Uuid::nil()
+        }
+        fn validate(&self) -> Result<(), CommandError> {
+            if self.valid {
+                Ok(())
+            } else {
+                Err(CommandError::validation("invalid", "Invalid command"))
+            }
+        }
+    }
+
+    struct Handler {
+        calls: Arc<AtomicUsize>,
+        fail: bool,
+        pending: bool,
+    }
+
+    #[async_trait]
+    impl CommandHandler<NonCloneCommand> for Handler {
+        async fn handle(&self, _command: NonCloneCommand) -> Result<(), CommandError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.pending {
+                std::future::pending::<()>().await;
+            }
+            if self.fail {
+                Err(CommandError::infrastructure(
+                    "transport",
+                    "Transport failed",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct Mapper;
+    impl CommandErrorMapper for Mapper {
+        fn map_error(&self, _: Box<dyn std::error::Error + Send + Sync>) -> CommandError {
+            CommandError::infrastructure("failure", "Command failed")
+        }
+    }
+
+    fn service(calls: Arc<AtomicUsize>, fail: bool, pending: bool) -> GenericCommandService {
+        let config = RegistryConfig {
+            default_timeout: Duration::from_millis(10),
+            ..RegistryConfig::default() // Retry policy remains enabled for other commands.
+        };
+        let registry = CommandRegistryBuilder::with_config(config)
+            .register::<NonCloneCommand, _>(
+                "one_shot".into(),
+                Arc::new(Handler {
+                    calls,
+                    fail,
+                    pending,
+                }),
+                Arc::new(Mapper),
+            )
+            .build();
+        GenericCommandService::new(Arc::new(registry))
+    }
+
+    #[tokio::test]
+    async fn non_clone_command_succeeds_once() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        service(calls.clone(), false, false)
+            .execute_once(NonCloneCommand { valid: true }, CommandContext::new())
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn retryable_transport_error_is_returned_without_retry() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let error = service(calls.clone(), true, false)
+            .execute_once(NonCloneCommand { valid: true }, CommandContext::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CommandError::Infrastructure { .. }));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn timeout_is_returned_without_retry() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let error = service(calls.clone(), false, true)
+            .execute_once(NonCloneCommand { valid: true }, CommandContext::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CommandError::Timeout { .. }));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn validation_prevents_handler_execution() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let error = service(calls.clone(), false, false)
+            .execute_once(NonCloneCommand { valid: false }, CommandContext::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CommandError::Validation { .. }));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn missing_handler_is_reported_without_retry() {
+        let service = GenericCommandService::new(Arc::new(CommandRegistry::new()));
+        assert!(matches!(
+            service
+                .execute_once(NonCloneCommand { valid: true }, CommandContext::new())
+                .await,
+            Err(CommandError::Infrastructure { .. })
+        ));
     }
 }
 

@@ -321,6 +321,63 @@ impl CommandRegistry {
             .await
     }
 
+    /// Execute a non-replayable command with validation and the configured timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, missing-handler, execution or timeout errors. The
+    /// command is moved into exactly one handler call; retries are never used.
+    /// Timeout cancels this call, not effects already committed by the handler.
+    pub async fn execute_command_once<C: Command + 'static>(
+        &self,
+        command: C,
+        context: CommandContext,
+    ) -> Result<C::Result, CommandError> {
+        let command_type = command.command_type();
+        let start_time = Instant::now();
+        self.trace_command_start(&command, &context);
+        self.validate_command(&command, command_type)?;
+        let handler = self.get_handler(command_type).ok_or_else(|| {
+            CommandError::infrastructure("handler_not_found", "No handler registered for command")
+        })?;
+
+        // Ownership, rather than a cloned payload, prevents replay of consumed proofs.
+        let result = match timeout(
+            self.config.default_timeout,
+            self.execute_once(handler, command, context),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(CommandError::timeout(
+                "command_timeout",
+                "Command execution timed out",
+            )),
+        };
+        let duration = start_time.elapsed();
+        if self.config.enable_tracing {
+            info!(
+                command_type,
+                duration_ms = duration_as_millis_u64(duration),
+                success = result.is_ok(),
+                retry_attempts = 0,
+                "One-shot command completed"
+            );
+        }
+        if self.config.enable_metrics {
+            self.metrics_collector
+                .record_metrics(CommandMetrics {
+                    command_type: command_type.to_string(),
+                    duration_ms: duration_as_millis_u64(duration),
+                    success: result.is_ok(),
+                    retry_attempts: 0,
+                    error_type: result.as_ref().err().map(|_| "command_failed".to_string()),
+                })
+                .await;
+        }
+        result
+    }
+
     async fn execute_with_retry<C: Command + Clone + 'static>(
         &self,
         command: C,

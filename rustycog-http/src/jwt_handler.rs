@@ -295,7 +295,7 @@ impl UserIdExtractor {
             validation.validate_aud = false;
         }
         validation.required_spec_claims = required;
-        validation.validate_nbf = false;
+        validation.validate_nbf = true;
 
         let token_data = decode::<serde_json::Value>(
             token,
@@ -335,6 +335,12 @@ impl UserIdExtractor {
         })?;
 
         let cached = jwks.resolve_key(kid).await?;
+        if !cached.trusted {
+            return Err(CommandError::authentication(
+                "invalid_token",
+                "JWK is pending or revoked",
+            ));
+        }
 
         let mut validation = Validation::new(Algorithm::RS256);
         let mut required = HashSet::from([String::from("exp"), String::from("iss")]);
@@ -347,7 +353,7 @@ impl UserIdExtractor {
             validation.validate_aud = false;
         }
         validation.required_spec_claims = required;
-        validation.validate_nbf = false;
+        validation.validate_nbf = true;
 
         let token_data = decode::<serde_json::Value>(token, &cached.decoding_key, &validation)
             .map_err(|error| Self::map_jwt_error(&error))?;
@@ -362,8 +368,38 @@ impl UserIdExtractor {
                 "JWT iss does not match JWK iss",
             ));
         }
+        if cached.organization_id.is_none()
+            && self
+                .hs256_issuer
+                .as_deref()
+                .is_some_and(|expected| expected != jwt_iss)
+        {
+            return Err(CommandError::authentication(
+                "invalid_token",
+                "JWT platform issuer does not match configuration",
+            ));
+        }
 
-        claims_to_principal(&claims, Some(jwt_iss.to_string()))
+        if let Some(owner) = cached.organization_id {
+            let org = claims["org"]
+                .as_str()
+                .and_then(|raw| Uuid::parse_str(raw).ok());
+            if org != Some(owner) {
+                return Err(CommandError::authentication(
+                    "invalid_token",
+                    "JWT org does not match JWK owner",
+                ));
+            }
+        }
+
+        let principal = claims_to_principal(&claims, Some(jwt_iss.to_string()))?;
+        if !jwks.still_authorizes(kid, cached.acquired_at) {
+            return Err(CommandError::authentication(
+                "invalid_token",
+                "JWKS authorization snapshot expired or replaced",
+            ));
+        }
+        Ok(principal)
     }
 
     fn map_jwt_error(error: &jsonwebtoken::errors::Error) -> CommandError {
@@ -462,7 +498,7 @@ fn claims_to_principal(
         CommandError::authentication("invalid_token", "Missing expiration in token")
     })?;
 
-    let _iat = claims["iat"].as_i64().ok_or_else(|| {
+    let iat = claims["iat"].as_i64().ok_or_else(|| {
         CommandError::authentication("invalid_token", "Missing issued at time in token")
     })?;
 
@@ -477,6 +513,7 @@ fn claims_to_principal(
     }
 
     let now = chrono::Utc::now().timestamp();
+    validate_claim_times(claims, iat, now, Validation::new(Algorithm::RS256).leeway)?;
     if exp <= now {
         debug!("Token expired: exp={exp}, now={now}");
         return Err(CommandError::authentication(
@@ -497,6 +534,30 @@ fn claims_to_principal(
     let org = claims["org"].as_str().map(str::to_string);
 
     Ok(JwtPrincipal { iss, sub, org })
+}
+
+fn validate_claim_times(
+    claims: &serde_json::Value,
+    iat: i64,
+    now: i64,
+    leeway: u64,
+) -> Result<(), CommandError> {
+    let latest = now.saturating_add(i64::try_from(leeway).unwrap_or(i64::MAX));
+    if iat < 0 || iat > latest {
+        return Err(CommandError::authentication(
+            "invalid_token",
+            "Invalid issued at time",
+        ));
+    }
+    if let Some(nbf) = claims.get("nbf") {
+        if !nbf.as_i64().is_some_and(|time| time >= 0 && time <= latest) {
+            return Err(CommandError::authentication(
+                "invalid_token",
+                "Invalid not before time",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Command handler for user ID extraction from bearer tokens.
@@ -530,3 +591,29 @@ impl CommandHandler<ValidateTokenCommand> for UserIdExtractionHandler {
 #[cfg(all(test, feature = "testing"))]
 #[path = "jwt_rs256_tests.rs"]
 mod jwt_rs256_tests;
+
+#[cfg(test)]
+mod claim_time_tests {
+    use super::*;
+
+    #[test]
+    fn optional_nbf_and_iat_use_the_same_bounded_skew() {
+        let now = 1_700_000_000;
+        let skew = Validation::new(Algorithm::RS256).leeway;
+        let bound = now + i64::try_from(skew).unwrap();
+        assert!(validate_claim_times(&serde_json::json!({}), bound, now, skew).is_ok());
+        assert!(validate_claim_times(&serde_json::json!({}), bound + 1, now, skew).is_err());
+        assert!(validate_claim_times(&serde_json::json!({}), -1, now, skew).is_err());
+        assert!(validate_claim_times(&serde_json::json!({"nbf":bound}), now, now, skew).is_ok());
+        for value in [
+            serde_json::json!(bound + 1),
+            serde_json::json!("future"),
+            serde_json::Value::Null,
+            serde_json::json!(-1),
+        ] {
+            assert!(
+                validate_claim_times(&serde_json::json!({"nbf":value}), now, now, skew).is_err()
+            );
+        }
+    }
+}

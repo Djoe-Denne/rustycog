@@ -176,9 +176,71 @@ where
     }
 
     fn call(&mut self, mut req: Request<B>) -> Self::Future {
+        // Only the accepted handshake supplies this extension. Preserve the
+        // SocketAddr make-service's ConnectInfo layer; never derive a peer here.
+        req.extensions_mut().remove::<PeerClientCertificate>();
         if let Some(peer) = self.peer.clone() {
             req.extensions_mut().insert(peer);
         }
         self.inner.call(req)
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::extract::ConnectInfo;
+    use axum::routing::get;
+    use axum::{Extension, Router};
+    use std::net::SocketAddr;
+
+    async fn observe(
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
+        peer: Option<Extension<PeerClientCertificate>>,
+    ) -> String {
+        let cert = peer.map(|Extension(peer)| peer.der);
+        format!("{addr}:{}", cert == Some(vec![1, 2, 3]))
+    }
+
+    async fn metadata_response(peer: Option<PeerClientCertificate>) -> String {
+        // In-memory make-service target, not a listener or TLS handshake.
+        let addr: SocketAddr = "192.0.2.10:4321".parse().unwrap();
+        let app = Router::new().route("/", get(observe));
+        let mut make = app.into_make_service_with_connect_info::<SocketAddr>();
+        let service = Service::<SocketAddr>::call(&mut make, addr).await.unwrap();
+        let mut service = InjectPeerClientCertService {
+            inner: service,
+            peer,
+        };
+        let mut req = Request::builder()
+            .uri("/")
+            .header("x-forwarded-for", "203.0.113.99")
+            .header("x-forwarded-client-cert", "unverified-client-certificate")
+            .header("x-principal-iss", "https://unverified.example")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(PeerClientCertificate { der: vec![9, 9, 9] });
+        req.extensions_mut().insert(ConnectInfo(
+            "203.0.113.99:9999".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = service.call(req).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn socket_connect_info_survives_certificate_injection() {
+        assert_eq!(
+            metadata_response(Some(PeerClientCertificate { der: vec![1, 2, 3] })).await,
+            "192.0.2.10:4321:true"
+        );
+    }
+
+    #[tokio::test]
+    async fn absent_handshake_certificate_never_trusts_request_headers_or_extension() {
+        assert_eq!(metadata_response(None).await, "192.0.2.10:4321:false");
     }
 }

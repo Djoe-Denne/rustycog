@@ -268,15 +268,17 @@ pub async fn serve_router(app: Router, config: ServerConfig) -> anyhow::Result<(
 async fn serve_http(app: Router, port: u16, host: &str) -> anyhow::Result<()> {
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
 async fn serve_https(app: Router, config: &ServerConfig) -> anyhow::Result<()> {
     if config.tls_require_client_cert && config.tls_client_ca_path.is_empty() {
-        anyhow::bail!(
-            "tls_require_client_cert requires tls_client_ca_path (fail-closed)"
-        );
+        anyhow::bail!("tls_require_client_cert requires tls_client_ca_path (fail-closed)");
     }
     let addr: SocketAddr = format!("{}:{}", config.host, config.tls_port).parse()?;
     if config.tls_client_ca_path.is_empty() {
@@ -286,13 +288,13 @@ async fn serve_https(app: Router, config: &ServerConfig) -> anyhow::Result<()> {
         )
         .await?;
         axum_server::bind_rustls(addr, tls_config)
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
     } else {
         let tls_config = super::tls::rustls_config_with_client_auth(config)?;
         axum_server::bind(addr)
             .acceptor(super::tls::PeerClientCertAcceptor::new(tls_config))
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
     }
     Ok(())
@@ -370,5 +372,36 @@ impl RouteBuilder {
             });
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod security_configuration_tests {
+    use super::*;
+
+    /// Required mTLS without a client CA must fail closed before any listener
+    /// bind or certificate load, on the TLS-only branch (`port == tls_port`).
+    #[tokio::test]
+    async fn required_mtls_without_client_ca_fails_before_listener_or_cert_loading() {
+        let config = ServerConfig {
+            port: 0,
+            tls_port: 0,
+            tls_enabled: true,
+            tls_require_client_cert: true,
+            tls_client_ca_path: String::new(),
+            tls_cert_path: String::new(),
+            tls_key_path: String::new(),
+            ..ServerConfig::default()
+        };
+
+        // Equal (zero) ports select the TLS-only branch: no concurrent HTTP
+        // socket can start, and the guard must reject before any cert load.
+        let result = serve_router(Router::new(), config).await;
+
+        let err = result.expect_err("required mTLS without a client CA must fail closed");
+        assert!(
+            err.to_string().contains("fail-closed"),
+            "expected the fail-closed mTLS guard error, got: {err}"
+        );
     }
 }

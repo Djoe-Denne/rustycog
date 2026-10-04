@@ -69,6 +69,8 @@ struct TestClaims {
     exp: usize,
     iat: usize,
     jti: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    org: Option<Uuid>,
 }
 
 /// Create a JWT token for the given user ID with a shared HS256 test secret
@@ -93,6 +95,7 @@ pub fn create_jwt_token_with_secret(user_id: Uuid, secret: &str) -> String {
         exp: unix_ts_as_usize((now + Duration::hours(1)).timestamp()),
         iat: unix_ts_as_usize(now.timestamp()),
         jti: Uuid::new_v4().to_string(),
+        org: None,
     };
 
     let header = Header::new(Algorithm::HS256);
@@ -112,14 +115,146 @@ pub fn create_jwt_token_with_secret(user_id: Uuid, secret: &str) -> String {
 #[must_use]
 #[allow(clippy::expect_used)]
 pub fn create_rs256_jwt_token(user_id: Uuid) -> String {
+    encode_rs256(user_id, Rs256TokenOptions::default(), None)
+}
+
+/// Mint a platform fixture token with the test instance's configured issuer.
+///
+/// # Panics
+///
+/// Panics if the nonsecret test key cannot encode the token.
+#[must_use]
+pub fn create_rs256_jwt_token_with_issuer(user_id: Uuid, issuer: &str) -> String {
+    create_rs256_jwt_token_with_options(
+        user_id,
+        Rs256TokenOptions {
+            iss: Some(issuer),
+            ..Default::default()
+        },
+    )
+}
+
+/// Publisher lifecycle metadata for a nonsecret test JWK.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestSigningKeyStatus {
+    Pending,
+    Active,
+    Retiring,
+    /// For explicit negative validator tests; real publishers omit revoked keys.
+    Revoked,
+}
+
+/// A typed canonical JWK using the fixed nonsecret RSA fixture material.
+///
+/// Constructors bind scope and organization together, never infer trust from
+/// issuer text. Wire names match the IAM publisher, including platform null.
+#[derive(Debug, Clone, Serialize)]
+pub struct CanonicalJwk {
+    kty: &'static str,
+    #[serde(rename = "use")]
+    usage: &'static str,
+    alg: &'static str,
+    kid: String,
+    n: &'static str,
+    e: &'static str,
+    iss: String,
+    status: TestSigningKeyStatus,
+    trust_scope: &'static str,
+    organization_id: Option<Uuid>,
+}
+
+impl CanonicalJwk {
+    #[must_use]
+    pub fn platform(issuer: impl Into<String>) -> Self {
+        Self {
+            kty: "RSA",
+            usage: "sig",
+            alg: "RS256",
+            kid: TEST_RS256_KID.into(),
+            n: TEST_RS256_N,
+            e: TEST_RS256_E,
+            iss: issuer.into(),
+            status: TestSigningKeyStatus::Active,
+            trust_scope: "platform",
+            organization_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn organization(issuer: impl Into<String>, organization_id: Uuid) -> Self {
+        Self {
+            kid: organization_test_kid(organization_id),
+            trust_scope: "organization",
+            organization_id: Some(organization_id),
+            ..Self::platform(issuer)
+        }
+    }
+
+    #[must_use]
+    pub const fn with_status(mut self, status: TestSigningKeyStatus) -> Self {
+        self.status = status;
+        self
+    }
+
+    #[must_use]
+    pub fn with_kid(mut self, kid: impl Into<String>) -> Self {
+        self.kid = kid.into();
+        self
+    }
+
+    #[must_use]
+    pub fn kid(&self) -> &str {
+        &self.kid
+    }
+
+    #[must_use]
+    pub fn issuer(&self) -> &str {
+        &self.iss
+    }
+
+    /// Serialize one fixture key with canonical publisher metadata.
+    ///
+    /// # Panics
+    ///
+    /// Panics if these fixed, JSON-compatible fixture fields cannot serialize.
+    #[must_use]
+    #[allow(clippy::expect_used)]
+    pub fn to_jwks_json(&self) -> String {
+        serde_json::to_string(&serde_json::json!({ "keys": [self] })).expect("canonical test JWKS")
+    }
+}
+
+fn organization_test_kid(organization_id: Uuid) -> String {
+    format!("test-org-rs256-{organization_id}")
+}
+
+/// Canonical organization JWKS, with a distinct kid bound to its owner.
+#[must_use]
+pub fn test_organization_rs256_jwks_json(organization_id: Uuid, issuer: &str) -> String {
+    CanonicalJwk::organization(issuer, organization_id).to_jwks_json()
+}
+
+/// Mint a token matching [`test_organization_rs256_jwks_json`].
+///
+/// # Panics
+///
+/// Panics if the nonsecret RSA fixture key cannot encode the token.
+#[must_use]
+pub fn create_organization_rs256_jwt_token(
+    user_id: Uuid,
+    organization_id: Uuid,
+    issuer: &str,
+) -> String {
+    let kid = organization_test_kid(organization_id);
     encode_rs256(
         user_id,
-        TEST_PLATFORM_ISSUER,
-        Some(TEST_RS256_KID),
-        Some("aiforall-access+jwt"),
-        None,
-        None,
-        false,
+        Rs256TokenOptions {
+            iss: Some(issuer),
+            kid: Some(Some(&kid)),
+            ..Default::default()
+        },
+        Some(organization_id),
     )
 }
 
@@ -132,13 +267,7 @@ pub fn test_rs256_jwks_json() -> String {
 /// JWKS JSON with a caller-provided custom JWK `iss` field.
 #[must_use]
 pub fn test_rs256_jwks_json_with_iss(iss: &str) -> String {
-    format!(
-        r#"{{"keys":[{{"kty":"RSA","use":"sig","alg":"RS256","kid":"{kid}","n":"{n}","e":"{e}","iss":"{iss}"}}]}}"#,
-        kid = TEST_RS256_KID,
-        n = TEST_RS256_N,
-        e = TEST_RS256_E,
-        iss = iss,
-    )
+    CanonicalJwk::platform(iss).to_jwks_json()
 }
 
 /// Options for minting deliberately malformed / variant RS256 test tokens.
@@ -169,6 +298,11 @@ pub fn create_rs256_jwt_token_with_options(
     user_id: Uuid,
     options: Rs256TokenOptions<'_>,
 ) -> String {
+    encode_rs256(user_id, options, None)
+}
+
+#[allow(clippy::expect_used)]
+fn encode_rs256(user_id: Uuid, options: Rs256TokenOptions<'_>, org: Option<Uuid>) -> String {
     let iss = options.iss.unwrap_or(TEST_PLATFORM_ISSUER);
     let kid = match options.kid {
         None => Some(TEST_RS256_KID),
@@ -178,27 +312,6 @@ pub fn create_rs256_jwt_token_with_options(
         None => Some("aiforall-access+jwt"),
         Some(inner) => inner,
     };
-    encode_rs256(
-        user_id,
-        iss,
-        kid,
-        typ,
-        options.jku,
-        options.x5u,
-        options.include_jwk_header,
-    )
-}
-
-#[allow(clippy::expect_used)]
-fn encode_rs256(
-    user_id: Uuid,
-    iss: &str,
-    kid: Option<&str>,
-    typ: Option<&str>,
-    jku: Option<&str>,
-    x5u: Option<&str>,
-    include_jwk_header: bool,
-) -> String {
     let now = Utc::now();
     let claims = TestClaims {
         sub: user_id.to_string(),
@@ -207,14 +320,15 @@ fn encode_rs256(
         exp: unix_ts_as_usize((now + Duration::hours(1)).timestamp()),
         iat: unix_ts_as_usize(now.timestamp()),
         jti: Uuid::new_v4().to_string(),
+        org,
     };
 
     let mut header = Header::new(Algorithm::RS256);
     header.typ = typ.map(str::to_string);
     header.kid = kid.map(str::to_string);
-    header.jku = jku.map(str::to_string);
-    header.x5u = x5u.map(str::to_string);
-    if include_jwk_header {
+    header.jku = options.jku.map(str::to_string);
+    header.x5u = options.x5u.map(str::to_string);
+    if options.include_jwk_header {
         header.jwk = Some(Jwk {
             common: CommonParameters::default(),
             algorithm: AlgorithmParameters::RSA(RSAKeyParameters {
@@ -232,4 +346,76 @@ fn encode_rs256(
 
 fn unix_ts_as_usize(ts: i64) -> usize {
     usize::try_from(ts).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod canonical_fixture_tests {
+    use super::*;
+    use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
+    use serde_json::Value;
+
+    fn verify_fixture_token(doc: &str, token: &str, issuer: &str) -> Value {
+        let doc: Value = serde_json::from_str(doc).unwrap();
+        let jwk: Jwk = serde_json::from_value(doc["keys"][0].clone()).unwrap();
+        let key = DecodingKey::from_jwk(&jwk).unwrap();
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.set_audience(&[TEST_JWT_AUDIENCE]);
+        validation.set_issuer(&[issuer]);
+        assert_eq!(
+            decode_header(token).unwrap().kid.as_deref(),
+            doc["keys"][0]["kid"].as_str()
+        );
+        decode::<Value>(token, &key, &validation).unwrap().claims
+    }
+
+    #[test]
+    fn platform_fixture_matches_explicit_issuer_and_serializes_null_owner() {
+        let issuer = "https://configured.test/iam";
+        let doc = test_rs256_jwks_json_with_iss(issuer);
+        let raw: Value = serde_json::from_str(&doc).unwrap();
+        assert_eq!(raw["keys"][0]["status"], "active");
+        assert_eq!(raw["keys"][0]["trust_scope"], "platform");
+        assert!(raw["keys"][0]["organization_id"].is_null());
+        let user = Uuid::new_v4();
+        let token = create_rs256_jwt_token_with_issuer(user, issuer);
+        let claims = verify_fixture_token(&doc, &token, issuer);
+        assert_eq!(claims["sub"], user.to_string());
+        assert!(claims.get("org").is_none());
+    }
+
+    #[test]
+    fn organization_fixture_has_distinct_owned_kid_and_matching_signed_claims() {
+        let organization = Uuid::new_v4();
+        let issuer = format!("https://configured.test/iam/orgs/{organization}");
+        let fixture = CanonicalJwk::organization(&issuer, organization);
+        assert_ne!(fixture.kid(), TEST_RS256_KID);
+        assert_eq!(fixture.issuer(), issuer);
+        let doc = test_organization_rs256_jwks_json(organization, &issuer);
+        let raw: Value = serde_json::from_str(&doc).unwrap();
+        assert_eq!(raw["keys"][0]["trust_scope"], "organization");
+        assert_eq!(raw["keys"][0]["organization_id"], organization.to_string());
+        let token = create_organization_rs256_jwt_token(Uuid::new_v4(), organization, &issuer);
+        assert_eq!(
+            verify_fixture_token(&doc, &token, &issuer)["org"],
+            organization.to_string()
+        );
+    }
+
+    #[test]
+    fn lifecycle_statuses_use_publisher_wire_names_without_inferred_scope() {
+        for (status, name) in [
+            (TestSigningKeyStatus::Pending, "pending"),
+            (TestSigningKeyStatus::Active, "active"),
+            (TestSigningKeyStatus::Retiring, "retiring"),
+            (TestSigningKeyStatus::Revoked, "revoked"),
+        ] {
+            let doc = CanonicalJwk::platform("https://configured.test/iam/orgs/not-an-owner")
+                .with_status(status)
+                .to_jwks_json();
+            let raw: Value = serde_json::from_str(&doc).unwrap();
+            assert_eq!(raw["keys"][0]["status"], name);
+            assert_eq!(raw["keys"][0]["trust_scope"], "platform");
+            assert!(raw["keys"][0]["organization_id"].is_null());
+        }
+    }
 }

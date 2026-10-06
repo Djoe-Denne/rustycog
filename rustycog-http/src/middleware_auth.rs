@@ -169,14 +169,11 @@ pub async fn optional_auth_middleware(
     next: Next,
 ) -> Result<Response, StatusCode> {
     if let Some(gateway_san) = user_id_extractor.gateway_san() {
-        require_gateway_peer(
-            req.extensions().get::<PeerClientCertificate>(),
-            gateway_san,
-        )
-        .map_err(|reason| {
-            debug!(reason, "Gateway principal rejected");
-            StatusCode::UNAUTHORIZED
-        })?;
+        require_gateway_peer(req.extensions().get::<PeerClientCertificate>(), gateway_san)
+            .map_err(|reason| {
+                debug!(reason, "Gateway principal rejected");
+                StatusCode::UNAUTHORIZED
+            })?;
         return Ok(match request_gateway_principal(&req, gateway_san) {
             Ok(principal) => next.run(with_principal(req, principal)).await,
             Err(reason) => {

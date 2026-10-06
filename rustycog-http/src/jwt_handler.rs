@@ -1,6 +1,6 @@
 //! JWT bearer-token verifier (RS256 + JWKS, with optional HS256 migration window).
 
-use super::jwks::JwksCache;
+use super::jwks::{normalize_authority_url, JwksCache, LocalJwksSeed};
 use crate::rustycog_command::{Command, CommandError, CommandHandler, ValidateTokenCommand};
 use crate::rustycog_config::{AuthConfig, JwtAuthConfig, MeshAuthConfig};
 use async_trait::async_trait;
@@ -54,6 +54,51 @@ impl UserIdExtractor {
     pub fn new(auth_config: AuthConfig) -> Result<Self, CommandError> {
         Self::from_parts(auth_config.jwt, None, None)
             .map(|extractor| extractor.with_mesh(&auth_config.mesh))
+    }
+
+    /// Build a URL-backed verifier seeded by this instance's local publisher.
+    ///
+    /// The trusted composition root must capture the complete authoritative
+    /// publication via [`LocalJwksSeed::capture`], not bootstrap PEM or client
+    /// data. This constructor performs no HTTP; polling remains lazy. Fresh
+    /// seeded keys validate the first concurrent burst without acquisition.
+    /// Successful refresh replaces the seed, including empty/revoked snapshots;
+    /// lookup and final authorization retain the original strict 60-second age.
+    /// Explicit HS256 migration configuration and mesh settings are preserved,
+    /// without enabling HS256 or deriving its secret from RSA material.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError`] for existing configuration errors, RS256 not
+    /// allowed, missing/empty issuer or audience, missing/invalid HTTP(S) URL
+    /// (userinfo/fragment rejected), a different normalized seed endpoint,
+    /// inconsistent platform issuer, or seed age >=60 seconds. No inline or
+    /// bootstrap fallback is installed on failure.
+    pub fn from_config_with_seeded_jwks(
+        mut auth_config: AuthConfig,
+        seed: LocalJwksSeed,
+    ) -> Result<Self, CommandError> {
+        let issuer = trim_opt(auth_config.jwt.issuer.clone()).ok_or_else(|| {
+            CommandError::authentication("invalid_jwt_config", "Seed requires a platform issuer")
+        })?;
+        if trim_opt(auth_config.jwt.audience.clone()).is_none() {
+            return Err(CommandError::authentication(
+                "invalid_jwt_config",
+                "Seed requires an audience",
+            ));
+        }
+        let raw_url = auth_config.jwt.jwks_url.as_deref().ok_or_else(|| {
+            CommandError::authentication("invalid_jwks_config", "Seed requires a JWKS URL")
+        })?;
+        auth_config.jwt.jwks_url = Some(normalize_authority_url(raw_url)?.to_string());
+        // Reuse the existing algorithm/secret/client construction unchanged.
+        // This cache has not escaped and polling has not started.
+        let extractor = Self::from_parts(auth_config.jwt, None, None)?;
+        let cache = extractor.jwks.as_ref().ok_or_else(|| {
+            CommandError::authentication("invalid_jwt_config", "Seed requires RS256 verification")
+        })?;
+        cache.install_local_seed(seed, &issuer)?;
+        Ok(extractor.with_mesh(&auth_config.mesh))
     }
 
     fn with_mesh(mut self, mesh: &MeshAuthConfig) -> Self {

@@ -67,11 +67,24 @@ fn write_pem(path: &Path, contents: &str) -> String {
 fn generate_pki() -> Pki {
     let dir = tempfile::tempdir().unwrap();
     let (ca, ca_key) = new_ca();
-    let (server, server_key) = new_leaf("localhost", ExtendedKeyUsagePurpose::ServerAuth, &ca, &ca_key);
-    let (gateway, gateway_key) =
-        new_leaf(GATEWAY_SAN, ExtendedKeyUsagePurpose::ClientAuth, &ca, &ca_key);
-    let (other, other_key) =
-        new_leaf("mesh-client", ExtendedKeyUsagePurpose::ClientAuth, &ca, &ca_key);
+    let (server, server_key) = new_leaf(
+        "localhost",
+        ExtendedKeyUsagePurpose::ServerAuth,
+        &ca,
+        &ca_key,
+    );
+    let (gateway, gateway_key) = new_leaf(
+        GATEWAY_SAN,
+        ExtendedKeyUsagePurpose::ClientAuth,
+        &ca,
+        &ca_key,
+    );
+    let (other, other_key) = new_leaf(
+        "mesh-client",
+        ExtendedKeyUsagePurpose::ClientAuth,
+        &ca,
+        &ca_key,
+    );
     Pki {
         server_cert_path: write_pem(&dir.path().join("server.crt"), &server.pem()),
         server_key_path: write_pem(&dir.path().join("server.key"), &server_key.serialize_pem()),
@@ -172,7 +185,10 @@ async fn wait_ready(server: &Server, client: &reqwest::Client, url: &str) {
         if client.get(url).send().await.is_ok() {
             return;
         }
-        assert!(start.elapsed() < Duration::from_secs(5), "server not ready: {url}");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "server not ready: {url}"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }

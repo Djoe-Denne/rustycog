@@ -116,7 +116,12 @@ mod tests {
     #[test]
     fn other_mesh_peer_is_rejected() {
         let headers = principal_headers("https://idp.example/iam", &Uuid::new_v4().to_string());
-        assert!(gateway_principal(Some(&peer(&["mesh-client"], "mesh-client")), &headers, GATEWAY).is_err());
+        assert!(gateway_principal(
+            Some(&peer(&["mesh-client"], "mesh-client")),
+            &headers,
+            GATEWAY
+        )
+        .is_err());
     }
 
     #[test]
@@ -136,10 +141,14 @@ mod tests {
         let gateway = peer(&[GATEWAY], GATEWAY);
 
         let mut missing = HeaderMap::new();
-        missing.insert(PRINCIPAL_ISS, HeaderValue::from_static("https://idp.example/iam"));
+        missing.insert(
+            PRINCIPAL_ISS,
+            HeaderValue::from_static("https://idp.example/iam"),
+        );
         assert!(gateway_principal(Some(&gateway), &missing, GATEWAY).is_err());
 
-        let mut duplicate = principal_headers("https://idp.example/iam", &Uuid::new_v4().to_string());
+        let mut duplicate =
+            principal_headers("https://idp.example/iam", &Uuid::new_v4().to_string());
         duplicate.append(
             PRINCIPAL_SUB,
             HeaderValue::from_str(&Uuid::new_v4().to_string()).unwrap(),

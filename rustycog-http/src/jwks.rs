@@ -4,6 +4,7 @@ use crate::rustycog_command::CommandError;
 use jsonwebtoken::{jwk::Jwk, DecodingKey};
 use std::{
     collections::HashMap,
+    future::Future,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, PoisonError, RwLock,
@@ -21,6 +22,90 @@ const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 struct Snapshot {
     keys: HashMap<String, CachedJwk>,
     acquired_at: Instant,
+}
+
+/// Move-only snapshot captured from this instance's trusted local JWKS publisher.
+///
+/// Valid JSON does **not** establish provenance. The trusted composition root
+/// must read the authoritative local publisher/primary registry, never a bearer
+/// body/header, persisted external configuration, stale copy or bootstrap PEM.
+/// The transport endpoint may differ from the public token issuer.
+///
+/// Capture time precedes the local read and parsing; consuming this seed never
+/// renews its strict 60-second authorization lifetime. There is no retained
+/// bootstrap fallback after authoritative refresh replaces the snapshot.
+pub struct LocalJwksSeed {
+    snapshot: Snapshot,
+    authority_url: reqwest::Url,
+}
+
+impl LocalJwksSeed {
+    /// Capture and validate the canonical snapshot of the local publisher.
+    ///
+    /// This factory performs no HTTP itself. The reader must only read the
+    /// trusted local authority and serialize its complete publication snapshot,
+    /// using the same filtering/serializer as the configured JWKS endpoint.
+    /// Acquisition is dated before invoking/awaiting the reader, not at return
+    /// or subsequent extractor construction. Reader errors propagate unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError`] for an invalid HTTP(S) authority URL (including
+    /// userinfo or fragment), reader failure, a document exceeding 1 MiB, or
+    /// invalid JSON/RSA keys/canonical trust metadata. Empty sets are valid;
+    /// Pending/Revoked keys remain untrusted. Freshness and configured platform
+    /// issuer are checked when the seed is consumed by the extractor.
+    pub async fn capture<F, Fut>(
+        authority_url: impl AsRef<str> + Send,
+        read_local_snapshot: F,
+    ) -> Result<Self, CommandError>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = Result<String, CommandError>> + Send,
+    {
+        let acquired_at = Instant::now();
+        let authority_url = normalize_authority_url(authority_url.as_ref())?;
+        let document = read_local_snapshot().await?;
+        if document.len() > MAX_DOCUMENT_BYTES {
+            return Err(CommandError::authentication(
+                "invalid_jwks",
+                "JWKS document too large",
+            ));
+        }
+        let keys = parse_jwks_document(&document)?;
+        Ok(Self {
+            snapshot: Snapshot { keys, acquired_at },
+            authority_url,
+        })
+    }
+}
+
+pub(crate) fn normalize_authority_url(raw: &str) -> Result<reqwest::Url, CommandError> {
+    let invalid =
+        || CommandError::authentication("invalid_jwks_config", "Invalid seeded JWKS authority URL");
+    let raw = raw.trim();
+    let url = reqwest::Url::parse(raw).map_err(|_| invalid())?;
+    // The URL parser can discard empty userinfo. Reject its raw delimiter too,
+    // but only in the authority (an '@' in path/query is not userinfo).
+    let has_userinfo = raw.split_once(':').is_some_and(|(_, rest)| {
+        // HTTP(S) URL parsing also accepts extra slashes/backslashes after the
+        // scheme. Do not let those conceal empty userinfo ('@host').
+        rest.trim_start_matches(['/', '\\'])
+            .split(['/', '\\', '?', '#'])
+            .next()
+            .is_some_and(|authority| authority.contains('@'))
+    });
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || has_userinfo
+        || raw.chars().any(|c| matches!(c, '\t' | '\r' | '\n'))
+        || url.fragment().is_some()
+    {
+        return Err(invalid());
+    }
+    Ok(url)
 }
 
 /// RSA verification material keyed by opaque `kid`, plus the JWK's custom `iss`.
@@ -48,6 +133,47 @@ pub(crate) struct JwksCache {
 }
 
 impl JwksCache {
+    /// Install only during construction of a fresh URL-backed extractor.
+    /// The opaque seed is consumed, with no second fallback copy or re-aging.
+    pub(crate) fn install_local_seed(
+        &self,
+        seed: LocalJwksSeed,
+        platform_issuer: &str,
+    ) -> Result<(), CommandError> {
+        let url = self.url.as_deref().ok_or_else(|| {
+            CommandError::authentication("invalid_jwks_config", "Seed requires a JWKS URL")
+        })?;
+        if normalize_authority_url(url)? != seed.authority_url {
+            return Err(CommandError::authentication(
+                "invalid_jwks_config",
+                "Seed and configured JWKS endpoints differ",
+            ));
+        }
+        if seed
+            .snapshot
+            .keys
+            .values()
+            .any(|key| key.organization_id.is_none() && key.iss != platform_issuer)
+        {
+            return Err(CommandError::authentication(
+                "invalid_jwks",
+                "Seed platform issuer does not match configuration",
+            ));
+        }
+        let mut snapshot = self
+            .snapshot
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        if seed.snapshot.acquired_at.elapsed() >= MAX_SNAPSHOT_AGE {
+            return Err(CommandError::authentication(
+                "invalid_jwks",
+                "Local JWKS seed has expired",
+            ));
+        }
+        *snapshot = Some(seed.snapshot);
+        Ok(())
+    }
+
     /// Build a cache from an inline JWKS JSON document (no network).
     ///
     /// # Errors
@@ -478,6 +604,10 @@ pub(crate) fn parse_jwks_document(
 
     Ok(out)
 }
+
+#[cfg(all(test, feature = "testing"))]
+#[path = "jwks_seed_tests.rs"]
+mod seed_tests;
 
 #[cfg(test)]
 mod freshness_tests {

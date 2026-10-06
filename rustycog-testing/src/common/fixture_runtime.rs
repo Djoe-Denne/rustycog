@@ -220,6 +220,34 @@ struct Inventory {
     names: Vec<String>,
     ports: Vec<u16>,
 }
+impl Inventory {
+    fn include_container(
+        &mut self,
+        names: &[String],
+        published_ports: &[u16],
+        listed_state: Option<&str>,
+        inspected_state: Option<&testcontainers::bollard::models::ContainerState>,
+    ) {
+        // Names remain reserved in ALL states. No inventory evidence grants
+        // ownership, adoption, or permission to remove the existing container.
+        self.names.extend_from_slice(names);
+        // HostConfig retains port bindings after stop. Ignore only a positively
+        // confirmed exited state; contradictory, missing, paused/restarting or
+        // transitional evidence remains a fail-closed port reservation.
+        let confirmed_exited = listed_state == Some("exited")
+            && inspected_state.is_some_and(|state| {
+                state.status
+                    == Some(testcontainers::bollard::models::ContainerStateStatusEnum::EXITED)
+                    && state.running == Some(false)
+                    && state.paused == Some(false)
+                    && state.restarting == Some(false)
+                    && state.dead == Some(false)
+            });
+        if !confirmed_exited {
+            self.ports.extend_from_slice(published_ports);
+        }
+    }
+}
 fn check_collision(inventory: &Inventory, name: &str, port: u16) -> Result<(), String> {
     if inventory
         .names
@@ -306,8 +334,12 @@ impl Attempt {
                 }
             }
             before.push(serde_json::json!({"id":id,"names":container.names,"published_ports":published,"state":container.state}));
-            inventory.names.extend(container.names.unwrap_or_default());
-            inventory.ports.extend(published);
+            inventory.include_container(
+                container.names.as_deref().unwrap_or_default(),
+                &published,
+                container.state.as_deref(),
+                inspect.state.as_ref(),
+            );
         }
         context.write_record(&serde_json::json!({"schema_version":1,"run_id":context.run,"process_id":std::process::id(),"attempt_id":number,"fixture_role":role,"container_name":name,"container_id":null,"event":"inventory","published_port":port,"before_inventory":before}), number)?;
         if let Err(error) = check_collision(&inventory, &name, port) {
@@ -728,6 +760,97 @@ impl Drop for OwnedContainer {
 #[cfg(test)]
 mod safety_tests {
     use super::*;
+    use testcontainers::bollard::models::{ContainerState, ContainerStateStatusEnum};
+
+    fn exited_state() -> ContainerState {
+        ContainerState {
+            status: Some(ContainerStateStatusEnum::EXITED),
+            running: Some(false),
+            paused: Some(false),
+            restarting: Some(false),
+            dead: Some(false),
+            ..ContainerState::default()
+        }
+    }
+
+    #[test]
+    fn prepare_projection_frees_only_exited_ports_and_keeps_exited_names() {
+        let mut inventory = Inventory::default();
+        inventory.include_container(
+            &["/postgres-old-run".into()],
+            &[45283],
+            Some("exited"),
+            Some(&exited_state()),
+        );
+        assert!(check_collision(&inventory, "postgres-fresh-run", 45283).is_ok());
+        assert!(check_collision(&inventory, "postgres-old-run", 1234).is_err());
+        assert_eq!(inventory.names, vec!["/postgres-old-run"]);
+        assert!(inventory.ports.is_empty());
+    }
+
+    #[test]
+    fn prepare_projection_protects_active_transitional_and_unknown_ports() {
+        for (listed, status) in [
+            (Some("running"), Some(ContainerStateStatusEnum::RUNNING)),
+            (Some("paused"), Some(ContainerStateStatusEnum::PAUSED)),
+            (
+                Some("restarting"),
+                Some(ContainerStateStatusEnum::RESTARTING),
+            ),
+            (Some("created"), Some(ContainerStateStatusEnum::CREATED)),
+            (Some("removing"), Some(ContainerStateStatusEnum::REMOVING)),
+            (Some("dead"), Some(ContainerStateStatusEnum::DEAD)),
+            (Some("unknown"), None),
+            (None, None),
+            (Some("exited"), Some(ContainerStateStatusEnum::RUNNING)),
+            (Some("running"), Some(ContainerStateStatusEnum::EXITED)),
+        ] {
+            let mut state = exited_state();
+            state.status = status;
+            state.running = Some(matches!(
+                status,
+                Some(
+                    ContainerStateStatusEnum::RUNNING
+                        | ContainerStateStatusEnum::PAUSED
+                        | ContainerStateStatusEnum::RESTARTING
+                )
+            ));
+            state.paused = Some(status == Some(ContainerStateStatusEnum::PAUSED));
+            state.restarting = Some(status == Some(ContainerStateStatusEnum::RESTARTING));
+            state.dead = Some(status == Some(ContainerStateStatusEnum::DEAD));
+            let mut inventory = Inventory::default();
+            inventory.include_container(&["/old".into()], &[45283], listed, Some(&state));
+            assert!(
+                check_collision(&inventory, "fresh", 45283).is_err(),
+                "{listed:?}"
+            );
+            assert!(check_collision(&inventory, "old", 1234).is_err());
+        }
+    }
+
+    #[test]
+    fn prepare_projection_missing_or_contradictory_exit_evidence_fails_closed() {
+        let mut states = vec![None, Some(ContainerState::default())];
+        for field in ["running", "paused", "restarting", "dead"] {
+            for value in [None, Some(true)] {
+                let mut state = exited_state();
+                match field {
+                    "running" => state.running = value,
+                    "paused" => state.paused = value,
+                    "restarting" => state.restarting = value,
+                    _ => state.dead = value,
+                }
+                states.push(Some(state));
+            }
+        }
+        for state in states {
+            let mut inventory = Inventory::default();
+            inventory.include_container(&["/old".into()], &[45283], Some("exited"), state.as_ref());
+            assert!(check_collision(&inventory, "fresh", 45283).is_err());
+            assert!(check_collision(&inventory, "old", 1234).is_err());
+        }
+    }
+
     #[test]
     fn foreign_collisions_are_stop_not_ownership() {
         assert!(check_collision(

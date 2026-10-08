@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::net::TcpListener;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -27,14 +28,20 @@ fn install_crypto() {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
 }
 
 async fn peer_handler(req: Request) -> String {
-    match req.extensions().get::<PeerClientCertificate>() {
-        None => "none".to_string(),
-        Some(cert) => format!("der:{}", hex_encode(&cert.der)),
-    }
+    req.extensions()
+        .get::<PeerClientCertificate>()
+        .map_or_else(
+            || "none".to_string(),
+            |cert| format!("der:{}", hex_encode(&cert.der)),
+        )
 }
 
 fn new_ca(common_name: &str) -> (Certificate, KeyPair) {
@@ -166,7 +173,7 @@ fn http_client() -> reqwest::Client {
         .unwrap()
 }
 
-async fn spawn_server(config: ServerConfig) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+fn spawn_server(config: ServerConfig) -> tokio::task::JoinHandle<anyhow::Result<()>> {
     let app = Router::new().route("/peer", get(peer_handler));
     tokio::spawn(async move { serve_router(app, config).await })
 }
@@ -178,15 +185,17 @@ async fn wait_until_ready(
 ) {
     let start = Instant::now();
     loop {
-        if handle.is_finished() {
-            panic!("TLS server exited before becoming ready");
-        }
+        assert!(
+            !handle.is_finished(),
+            "TLS server exited before becoming ready"
+        );
         match client.get(url).send().await {
             Ok(_) => return,
             Err(err) => {
-                if start.elapsed() > Duration::from_secs(5) {
-                    panic!("TLS server not ready after 5s: {err}");
-                }
+                assert!(
+                    start.elapsed() <= Duration::from_secs(5),
+                    "TLS server not ready after 5s: {err}"
+                );
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
@@ -209,7 +218,7 @@ async fn one_way_tls_without_client_ca_has_no_peer_extension() {
     let pki = generate_pki();
     let port = ephemeral_port();
     let url = format!("https://127.0.0.1:{port}/peer");
-    let handle = spawn_server(server_config(&pki, String::new(), port)).await;
+    let handle = spawn_server(server_config(&pki, String::new(), port));
     let client = https_client(None);
     wait_until_ready(&handle, &client, &url).await;
 
@@ -225,7 +234,7 @@ async fn optional_client_auth_without_cert_has_no_peer_extension() {
     let pki = generate_pki();
     let port = ephemeral_port();
     let url = format!("https://127.0.0.1:{port}/peer");
-    let handle = spawn_server(server_config(&pki, pki.client_ca_path.clone(), port)).await;
+    let handle = spawn_server(server_config(&pki, pki.client_ca_path.clone(), port));
     let client = https_client(None);
     wait_until_ready(&handle, &client, &url).await;
 
@@ -241,7 +250,7 @@ async fn trusted_client_cert_inserts_leaf_der_extension() {
     let pki = generate_pki();
     let port = ephemeral_port();
     let url = format!("https://127.0.0.1:{port}/peer");
-    let handle = spawn_server(server_config(&pki, pki.client_ca_path.clone(), port)).await;
+    let handle = spawn_server(server_config(&pki, pki.client_ca_path.clone(), port));
     let probe = https_client(None);
     wait_until_ready(&handle, &probe, &url).await;
 
@@ -258,7 +267,7 @@ async fn foreign_client_cert_fails_handshake() {
     let pki = generate_pki();
     let port = ephemeral_port();
     let url = format!("https://127.0.0.1:{port}/peer");
-    let handle = spawn_server(server_config(&pki, pki.client_ca_path.clone(), port)).await;
+    let handle = spawn_server(server_config(&pki, pki.client_ca_path.clone(), port));
     let probe = https_client(None);
     wait_until_ready(&handle, &probe, &url).await;
 
@@ -287,7 +296,7 @@ async fn required_client_cert_rejects_missing_and_foreign_ca() {
     let pki = generate_pki();
     let port = ephemeral_port();
     let url = format!("https://127.0.0.1:{port}/peer");
-    let handle = spawn_server(required_server_config(&pki, port)).await;
+    let handle = spawn_server(required_server_config(&pki, port));
 
     let mesh = https_client(Some(&pki.client_identity_pem));
     wait_until_ready(&handle, &mesh, &url).await;
@@ -322,7 +331,7 @@ async fn required_client_cert_without_ca_does_not_start() {
     let port = ephemeral_port();
     let mut config = server_config(&pki, String::new(), port);
     config.tls_require_client_cert = true;
-    let handle = spawn_server(config).await;
+    let handle = spawn_server(config);
     let joined = tokio::time::timeout(Duration::from_secs(5), handle)
         .await
         .expect("server should exit when client CA is missing");
@@ -346,8 +355,7 @@ async fn dual_bind_http_and_optional_mtls() {
         cleartext_port,
         pki.client_ca_path.clone(),
         tls_listen,
-    ))
-    .await;
+    ));
 
     let plain = http_client();
     wait_until_ready(&handle, &plain, &cleartext_url).await;
@@ -388,8 +396,7 @@ async fn matching_http_and_tls_port_binds_tls_only() {
         shared_port,
         pki.client_ca_path.clone(),
         shared_port,
-    ))
-    .await;
+    ));
 
     let tls_probe = https_client(None);
     wait_until_ready(&handle, &tls_probe, &tls_url).await;
@@ -404,7 +411,7 @@ async fn matching_http_and_tls_port_binds_tls_only() {
     handle.abort();
 }
 
-/// Keep the failing address occupied until serve_router has returned. The other
+/// Keep the failing address occupied until `serve_router` has returned. The other
 /// address is chosen with an owned reservation, never a fixed/global test port.
 /// A TCP probe gives runnable sibling tasks a transport polling opportunity;
 /// successful exclusive rebind, not a TLS/HTTP request error, proves release.
@@ -425,7 +432,7 @@ async fn assert_dual_bind_conflict_releases_sibling(tls_fails: bool) {
     // async certificate-file loading delaying a detached sibling's bind.
     let config = dual_bind_config(&pki, http_port, pki.client_ca_path.clone(), tls_port);
     drop(sibling_reservation);
-    let mut serving = spawn_server(config).await;
+    let mut serving = spawn_server(config);
     let completed = tokio::time::timeout(Duration::from_secs(5), &mut serving).await;
     let (returned_error, deliberate_bind_error) = match completed {
         Ok(Ok(Err(error))) => {

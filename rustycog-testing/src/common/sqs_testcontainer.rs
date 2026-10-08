@@ -65,8 +65,8 @@ impl TestSqs {
     ///
     /// # Errors
     ///
-    /// Returns an error if the LocalStack container cannot be started, the SQS
-    /// client cannot be created, LocalStack is not ready, or test queues cannot
+    /// Returns an error if the `LocalStack` container cannot be started, the SQS
+    /// client cannot be created, `LocalStack` is not ready, or test queues cannot
     /// be created.
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let (container, sqs_config) = get_or_create_test_sqs_container().await?;

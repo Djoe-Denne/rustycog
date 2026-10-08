@@ -174,7 +174,7 @@ async fn get_or_create_test_container() -> Result<Arc<TestDatabaseContainer>, Db
     let host_port = container
         .mapped_port(testcontainers::core::ContainerPort::Tcp(5432))
         .await
-        .map_err(|e| DbErr::Custom(e.to_string()))?;
+        .map_err(DbErr::Custom)?;
     let database_url = format!(
         "postgres://{}:{}@{}:{}/{}",
         db_config.creds.username, db_config.creds.password, endpoint.host, host_port, db_config.db
@@ -294,8 +294,8 @@ impl TestFixture {
     ///
     /// # Errors
     ///
-    /// Returns an error if OpenFGA is requested but no authorization model is
-    /// provided, or if the OpenFGA, database, or SQS fixtures cannot be created.
+    /// Returns an error if `OpenFGA` is requested but no authorization model is
+    /// provided, or if the `OpenFGA`, database, or `SQS` fixtures cannot be created.
     pub async fn new<D, T>(descriptor: Arc<D>) -> Result<Self, DbErr>
     where
         D: ServiceTestDescriptor<T>,

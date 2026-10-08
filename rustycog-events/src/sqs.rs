@@ -106,49 +106,42 @@ impl SqsEventPublisher {
         Ok(queue_names.into_iter().map(str::to_string).collect())
     }
 
+    fn string_message_attribute(
+        value: impl Into<String>,
+    ) -> Result<aws_sdk_sqs::types::MessageAttributeValue, ServiceError> {
+        aws_sdk_sqs::types::MessageAttributeValue::builder()
+            .data_type("String")
+            .string_value(value)
+            .build()
+            .map_err(|e| {
+                ServiceError::infrastructure(format!("Failed to build SQS message attribute: {e}"))
+            })
+    }
+
     /// Create message attributes for the event
     fn create_message_attributes(
         event: &dyn DomainEvent,
-    ) -> std::collections::HashMap<String, aws_sdk_sqs::types::MessageAttributeValue> {
-        let mut attributes = std::collections::HashMap::new();
+    ) -> Result<HashMap<String, aws_sdk_sqs::types::MessageAttributeValue>, ServiceError> {
+        let mut attributes = HashMap::new();
 
         attributes.insert(
             "event_id".to_string(),
-            aws_sdk_sqs::types::MessageAttributeValue::builder()
-                .data_type("String")
-                .string_value(event.event_id().to_string())
-                .build()
-                .expect("MessageAttributeValue builder: data_type and string_value are set"),
+            Self::string_message_attribute(event.event_id().to_string())?,
         );
-
         attributes.insert(
             "event_type".to_string(),
-            aws_sdk_sqs::types::MessageAttributeValue::builder()
-                .data_type("String")
-                .string_value(event.event_type())
-                .build()
-                .expect("MessageAttributeValue builder: data_type and string_value are set"),
+            Self::string_message_attribute(event.event_type())?,
         );
-
         attributes.insert(
             "aggregate_id".to_string(),
-            aws_sdk_sqs::types::MessageAttributeValue::builder()
-                .data_type("String")
-                .string_value(event.aggregate_id().to_string())
-                .build()
-                .expect("MessageAttributeValue builder: data_type and string_value are set"),
+            Self::string_message_attribute(event.aggregate_id().to_string())?,
         );
-
         attributes.insert(
             "source".to_string(),
-            aws_sdk_sqs::types::MessageAttributeValue::builder()
-                .data_type("String")
-                .string_value("rustycog-events")
-                .build()
-                .expect("MessageAttributeValue builder: data_type and string_value are set"),
+            Self::string_message_attribute("rustycog-events")?,
         );
 
-        attributes
+        Ok(attributes)
     }
 
     fn build_batch_entries(
@@ -177,7 +170,7 @@ impl SqsEventPublisher {
     ) -> Result<(), ServiceError> {
         let queue_names = self.get_queue_names_for_event(event)?;
         let message_body = Self::serialize_event(event)?;
-        let message_attributes = Self::create_message_attributes(event);
+        let message_attributes = Self::create_message_attributes(event)?;
 
         for (queue_idx, queue_name) in queue_names.into_iter().enumerate() {
             let entry = self.build_batch_entry(
@@ -325,7 +318,7 @@ impl EventPublisher<ServiceError> for SqsEventPublisher {
 
         let queue_names = self.get_queue_names_for_event(event)?;
         let message_body = Self::serialize_event(event)?;
-        let message_attributes = Self::create_message_attributes(event);
+        let message_attributes = Self::create_message_attributes(event)?;
 
         let mut first_error = None;
         for queue_name in queue_names {

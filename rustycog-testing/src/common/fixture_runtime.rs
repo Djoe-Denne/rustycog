@@ -19,7 +19,7 @@ static ATTEMPT: AtomicU64 = AtomicU64::new(0);
 static TASKS: OnceLock<Mutex<Vec<Task>>> = OnceLock::new();
 
 #[derive(Clone)]
-pub(crate) struct Endpoint {
+pub struct Endpoint {
     pub host: String,
 }
 impl Endpoint {
@@ -28,11 +28,7 @@ impl Endpoint {
             return Err("explicit runner mode local|bridge required".into());
         }
         let host = host
-            .or(if mode == "local" {
-                Some("127.0.0.1")
-            } else {
-                None
-            })
+            .or_else(|| (mode == "local").then_some("127.0.0.1"))
             .ok_or("bridge runner host required")?;
         if host.is_empty()
             || host.len() > 253
@@ -84,7 +80,7 @@ impl Endpoint {
         url.set_host(Some(&self.host))
             .map_err(|_| "invalid fixture hostname")?;
         url.set_port(Some(port))
-            .map_err(|_| "invalid fixture port")?;
+            .map_err(|()| "invalid fixture port")?;
         Ok(url.to_string())
     }
 }
@@ -132,8 +128,8 @@ impl Context {
             serde_json::to_vec(&record).map_err(|_| "fixture ledger serialization failed")?;
         bytes.push(b'\n');
         file.write_all(&bytes)
-            .and_then(|_| file.flush())
-            .and_then(|_| file.sync_data())
+            .and_then(|()| file.flush())
+            .and_then(|()| file.sync_data())
             .map_err(|_| {
                 self.unknown.store(true, Ordering::SeqCst);
                 tracing::error!(
@@ -199,10 +195,10 @@ fn context() -> Result<Arc<Context>, String> {
         })
         .clone()
 }
-pub(crate) fn endpoint() -> Result<Endpoint, String> {
+pub fn endpoint() -> Result<Endpoint, String> {
     Ok(context()?.endpoint.clone())
 }
-pub(crate) fn take_unshared<T>(singleton: &mut Option<Arc<T>>) -> Result<Option<T>, Arc<T>> {
+pub fn take_unshared<T>(singleton: &mut Option<Arc<T>>) -> Result<Option<T>, Arc<T>> {
     let Some(arc) = singleton.take() else {
         return Ok(None);
     };
@@ -259,7 +255,7 @@ fn check_collision(inventory: &Inventory, name: &str, port: u16) -> Result<(), S
     }
     Ok(())
 }
-pub(crate) struct Attempt {
+pub struct Attempt {
     context: Arc<Context>,
     number: u64,
     role: String,
@@ -385,45 +381,42 @@ impl Attempt {
                 .lock()
                 .map_err(|_| "fixture supervisor lock poisoned")?;
             let task = tokio::spawn(async move {
-                match create.await {
-                    Ok(container) => {
-                        let id = container.id().to_string();
-                        if id.is_empty() {
-                            self.context.unknown(
-                                self.number,
-                                &self.role,
-                                &self.name,
-                                "unknown_empty_id",
-                                self.port,
-                            );
-                            return Err("fixture returned no ID; cleanup INCONCLUSIVE".into());
-                        }
-                        let owned = OwnedContainer {
-                            container: Some(container),
-                            attempt: self,
-                            id,
-                            removed_confirmed: false,
-                        };
-                        owned.attempt.context.event(
-                            owned.attempt.number,
-                            &owned.attempt.role,
-                            &owned.attempt.name,
-                            Some(&owned.id),
-                            "created",
-                            owned.attempt.port,
-                        )?;
-                        Ok(owned)
-                    }
-                    Err(_) => {
+                if let Ok(container) = create.await {
+                    let id = container.id().to_string();
+                    if id.is_empty() {
                         self.context.unknown(
                             self.number,
                             &self.role,
                             &self.name,
-                            "unknown_opaque_start_failure",
+                            "unknown_empty_id",
                             self.port,
                         );
-                        Err("opaque fixture start failure; identity UNKNOWN".into())
+                        return Err("fixture returned no ID; cleanup INCONCLUSIVE".into());
                     }
+                    let owned = OwnedContainer {
+                        container: Some(container),
+                        attempt: self,
+                        id,
+                        removed_confirmed: false,
+                    };
+                    owned.attempt.context.event(
+                        owned.attempt.number,
+                        &owned.attempt.role,
+                        &owned.attempt.name,
+                        Some(&owned.id),
+                        "created",
+                        owned.attempt.port,
+                    )?;
+                    Ok(owned)
+                } else {
+                    self.context.unknown(
+                        self.number,
+                        &self.role,
+                        &self.name,
+                        "unknown_opaque_start_failure",
+                        self.port,
+                    );
+                    Err("opaque fixture start failure; identity UNKNOWN".into())
                 }
             });
             *slot
@@ -482,6 +475,7 @@ async fn await_retained<T>(
     };
     let result = task.await;
     guard.take();
+    drop(guard);
     result.map(Some)
 }
 async fn join_slot(slot: &Slot) -> StartResult {
@@ -633,19 +627,11 @@ pub async fn join_fixture_creations() -> Result<(), String> {
     }
 }
 
-pub(crate) struct OwnedContainer {
+pub struct OwnedContainer {
     container: Option<ContainerAsync<GenericImage>>,
     attempt: Attempt,
     id: String,
     removed_confirmed: bool,
-}
-impl std::ops::Deref for OwnedContainer {
-    type Target = ContainerAsync<GenericImage>;
-    fn deref(&self) -> &Self::Target {
-        self.container
-            .as_ref()
-            .expect("owned container exists until consuming teardown")
-    }
 }
 impl OwnedContainer {
     pub async fn mapped_port(
@@ -653,6 +639,9 @@ impl OwnedContainer {
         internal: testcontainers::core::ContainerPort,
     ) -> Result<u16, String> {
         let port = self
+            .container
+            .as_ref()
+            .ok_or("owned container exists until consuming teardown")?
             .get_host_port_ipv4(internal)
             .await
             .map_err(|_| "cannot obtain daemon-mapped fixture port".to_string())?;
@@ -691,8 +680,20 @@ impl OwnedContainer {
             self.attempt.port,
         )
     }
+    pub async fn stop(&self) -> Result<(), String> {
+        self.container
+            .as_ref()
+            .ok_or("owned container exists until consuming teardown")?
+            .stop()
+            .await
+            .map_err(|_| "owned container stop failed".to_string())
+    }
     pub async fn rm(mut self) -> Result<(), String> {
-        ensure_exact_owned_id(&self.id, self.container.as_ref().map(|c| c.id()), false)?;
+        ensure_exact_owned_id(
+            &self.id,
+            self.container.as_ref().map(ContainerAsync::id),
+            false,
+        )?;
         self.attempt.context.event(
             self.attempt.number,
             &self.attempt.role,

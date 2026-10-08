@@ -1,6 +1,6 @@
 //! Unit tests for ADR-0304 RS256 + JWKS verification (inline and seeded URL caches).
 
-use super::*;
+use super::{ACCESS_TOKEN_TYP, LocalJwksSeed, UserIdExtractor};
 use crate::rustycog_config::{AuthConfig, JwtAuthConfig};
 use crate::testing::http::jwt::{
     create_jwt_token_with_secret, create_rs256_jwt_token, create_rs256_jwt_token_with_issuer,
@@ -8,6 +8,8 @@ use crate::testing::http::jwt::{
     CanonicalJwk, Rs256TokenOptions, TEST_HS256_SECRET, TEST_JWT_AUDIENCE, TEST_PLATFORM_ISSUER,
     TEST_RS256_KID,
 };
+use jsonwebtoken::{Algorithm, Header};
+use std::sync::Arc;
 use uuid::Uuid;
 
 fn signed_claims(claims: &serde_json::Value) -> String {

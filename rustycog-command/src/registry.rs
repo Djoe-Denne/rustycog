@@ -342,18 +342,20 @@ impl CommandRegistry {
         })?;
 
         // Ownership, rather than a cloned payload, prevents replay of consumed proofs.
-        let result = match timeout(
+        let result = timeout(
             self.config.default_timeout,
             self.execute_once(handler, command, context),
         )
         .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(CommandError::timeout(
-                "command_timeout",
-                "Command execution timed out",
-            )),
-        };
+        .map_or_else(
+            |_| {
+                Err(CommandError::timeout(
+                    "command_timeout",
+                    "Command execution timed out",
+                ))
+            },
+            |result| result,
+        );
         let duration = start_time.elapsed();
         if self.config.enable_tracing {
             info!(

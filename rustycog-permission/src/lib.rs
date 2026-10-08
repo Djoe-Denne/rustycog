@@ -22,7 +22,7 @@ pub use checker::{
     OpenFgaPermissionChecker,
 };
 
-/// One stored OpenFGA relationship tuple (`user` / `relation` / `object`).
+/// One stored `OpenFGA` relationship tuple (`user` / `relation` / `object`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RelationshipTuple {
     /// Subject on the wire, e.g. `user:{uuid}` or `organization:{uuid}#member`.
@@ -116,7 +116,10 @@ impl From<String> for Permission {
     /// input may be invalid.
     #[allow(clippy::fallible_impl_from)]
     fn from(s: String) -> Self {
-        Self::from_str(&s).expect("Permission::from requires a known permission name")
+        match Self::from_str(&s) {
+            Ok(permission) => permission,
+            Err(_) => panic!("Permission::from requires a known permission name"),
+        }
     }
 }
 

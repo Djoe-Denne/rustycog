@@ -30,7 +30,7 @@ pub struct OpenFgaPermissionChecker {
 }
 
 impl OpenFgaPermissionChecker {
-    /// Build an HTTP client for the configured OpenFGA endpoint.
+    /// Build an HTTP client for the configured `OpenFGA` endpoint.
     ///
     /// # Errors
     ///
@@ -63,7 +63,7 @@ impl OpenFgaPermissionChecker {
 
     /// Read stored relationship tuples. Pass `None` to leave a field unconstrained.
     ///
-    /// This is the OpenFGA Read API (persisted tuples only, not computed
+    /// This is the `OpenFGA` Read API (persisted tuples only, not computed
     /// usersets). Pages through `continuation_token` until exhausted.
     ///
     /// # Errors

@@ -27,18 +27,15 @@ fn build_scaleway_loki_stack<C: ServiceLoggerConfig>(
         .label(
             "job",
             env::var("JOB").unwrap_or_else(|_| "unknown".to_string()),
-        )
-        .map_err(anyhow::Error::from)?
+        )?
         .label(
             "service",
             env::var("SERVICE").unwrap_or_else(|_| "unknown".to_string()),
-        )
-        .map_err(anyhow::Error::from)?
+        )?
         .http_header(
             "Authorization",
             format!("Bearer {}", scaleway_loki.cockpit_token),
-        )
-        .map_err(anyhow::Error::from)?
+        )?
         .build_url(url)
         .map_err(anyhow::Error::from)
 }

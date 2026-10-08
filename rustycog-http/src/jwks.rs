@@ -80,7 +80,7 @@ impl LocalJwksSeed {
     }
 }
 
-pub(crate) fn normalize_authority_url(raw: &str) -> Result<reqwest::Url, CommandError> {
+pub fn normalize_authority_url(raw: &str) -> Result<reqwest::Url, CommandError> {
     let invalid =
         || CommandError::authentication("invalid_jwks_config", "Invalid seeded JWKS authority URL");
     let raw = raw.trim();
@@ -110,7 +110,7 @@ pub(crate) fn normalize_authority_url(raw: &str) -> Result<reqwest::Url, Command
 
 /// RSA verification material keyed by opaque `kid`, plus the JWK's custom `iss`.
 #[derive(Clone)]
-pub(crate) struct CachedJwk {
+pub struct CachedJwk {
     pub decoding_key: DecodingKey,
     pub iss: String,
     pub organization_id: Option<uuid::Uuid>,
@@ -120,7 +120,7 @@ pub(crate) struct CachedJwk {
 
 /// In-memory JWKS cache. Known kids verify locally; unknown kids trigger a
 /// coalesced refresh when a URL is configured.
-pub(crate) struct JwksCache {
+pub struct JwksCache {
     url: Option<String>,
     snapshot: RwLock<Option<Snapshot>>,
     last_attempt: RwLock<Option<Instant>>,
@@ -160,16 +160,16 @@ impl JwksCache {
                 "Seed platform issuer does not match configuration",
             ));
         }
-        let mut snapshot = self
-            .snapshot
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
         if seed.snapshot.acquired_at.elapsed() >= MAX_SNAPSHOT_AGE {
             return Err(CommandError::authentication(
                 "invalid_jwks",
                 "Local JWKS seed has expired",
             ));
         }
+        let mut snapshot = self
+            .snapshot
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
         *snapshot = Some(seed.snapshot);
         Ok(())
     }
@@ -204,7 +204,7 @@ impl JwksCache {
     ///
     /// Returns [`CommandError`] if `url` is empty after trimming.
     pub(crate) fn from_url(
-        url: String,
+        url: &str,
         refresh_interval_secs: u64,
         negative_cache_ttl_secs: u64,
     ) -> Result<Arc<Self>, CommandError> {
@@ -375,11 +375,13 @@ impl JwksCache {
         let parsed = parse_jwks_document(&body)?;
         self.apply_snapshot(parsed, acquired_at);
         // Successful refresh clears negative entries so kids can be retried.
-        let mut negative = self
-            .negative
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
-        negative.clear();
+        {
+            let mut negative = self
+                .negative
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
+            negative.clear();
+        }
         Ok(())
     }
 
@@ -393,10 +395,11 @@ impl JwksCache {
         if now.saturating_duration_since(snapshot.acquired_at) >= MAX_SNAPSHOT_AGE {
             return None;
         }
-        snapshot.keys.get(kid).cloned().map(|mut key| {
-            key.acquired_at = snapshot.acquired_at;
-            key
-        })
+        let acquired_at = snapshot.acquired_at;
+        let mut key = snapshot.keys.get(kid).cloned()?;
+        drop(guard);
+        key.acquired_at = acquired_at;
+        Some(key)
     }
 
     pub(crate) fn still_authorizes(&self, kid: &str, acquired_at: Instant) -> bool {
@@ -474,14 +477,14 @@ impl JwksCache {
     }
 }
 
-/// Parse a JWKS JSON document into kid → (DecodingKey, iss).
+/// Parse a JWKS JSON document into `kid` → (`DecodingKey`, `iss`).
 ///
 /// The custom JWK field `iss` is required for every key we accept.
 ///
 /// # Errors
 ///
 /// Returns [`CommandError`] on invalid JSON, keys or canonical trust metadata.
-pub(crate) fn parse_jwks_document(
+pub fn parse_jwks_document(
     jwks_json: &str,
 ) -> Result<HashMap<String, CachedJwk>, CommandError> {
     let root: serde_json::Value = serde_json::from_str(jwks_json).map_err(|e| {
@@ -494,105 +497,11 @@ pub(crate) fn parse_jwks_document(
 
     let mut out = HashMap::new();
     for key_value in keys {
-        let invalid =
-            || CommandError::authentication("invalid_jwks", "Invalid JWKS trust metadata");
-        let status = key_value
-            .get("status")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(invalid)?;
-        let trusted = match status {
-            "active" | "retiring" => true,
-            "pending" | "revoked" => false,
-            _ => return Err(invalid()),
-        };
-        let organization_id = match key_value
-            .get("trust_scope")
-            .and_then(serde_json::Value::as_str)
-        {
-            Some("platform")
-                if key_value
-                    .get("organization_id")
-                    .is_some_and(serde_json::Value::is_null) =>
-            {
-                None
-            }
-            Some("organization") => {
-                let raw = key_value
-                    .get("organization_id")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(invalid)?;
-                let id = uuid::Uuid::parse_str(raw).map_err(|_| invalid())?;
-                if id.to_string() != raw {
-                    return Err(invalid());
-                }
-                Some(id)
-            }
-            _ => return Err(invalid()),
-        };
-        let Some(kid) = key_value.get("kid").and_then(|v| v.as_str()) else {
-            return Err(invalid());
-        };
-        let Some(iss) = key_value.get("iss").and_then(|v| v.as_str()) else {
-            return Err(invalid());
-        };
-        if iss.trim().is_empty()
-            || kid.is_empty()
-            || kid.len() > MAX_KID_BYTES
-            || out.contains_key(kid)
-        {
-            return Err(invalid());
+        let (kid, cached) = parse_jwk_entry(key_value)?;
+        if out.contains_key(&kid) {
+            return Err(invalid_jwks_trust());
         }
-        if kid.contains('/') || kid.contains('\\') || kid.contains("://") || kid.contains("..") {
-            debug!(kid = kid, "Skipping JWK with dangerous kid");
-            return Err(invalid());
-        }
-        let kty = key_value.get("kty").and_then(|v| v.as_str()).unwrap_or("");
-        if kty != "RSA" {
-            debug!(
-                kid = kid,
-                kty = kty,
-                "Skipping non-RSA JWK (HMAC never trusted)"
-            );
-            return Err(invalid());
-        }
-        if let Some(alg) = key_value.get("alg").and_then(|v| v.as_str()) {
-            if alg != "RS256" {
-                debug!(kid = kid, alg = alg, "Skipping JWK with non-RS256 alg");
-                return Err(invalid());
-            }
-        }
-        if key_value
-            .get("use")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|usage| usage != "sig")
-        {
-            return Err(invalid());
-        }
-
-        let jwk: Jwk = serde_json::from_value(key_value.clone()).map_err(|e| {
-            CommandError::authentication(
-                "invalid_jwks",
-                format!("failed to parse JWK kid={kid}: {e}"),
-            )
-        })?;
-
-        let decoding_key = DecodingKey::from_jwk(&jwk).map_err(|e| {
-            CommandError::authentication(
-                "invalid_jwks",
-                format!("failed to build decoding key for kid={kid}: {e}"),
-            )
-        })?;
-
-        out.insert(
-            kid.to_string(),
-            CachedJwk {
-                decoding_key,
-                iss: iss.to_string(),
-                organization_id,
-                trusted,
-                acquired_at: Instant::now(),
-            },
-        );
+        out.insert(kid, cached);
     }
 
     if out.is_empty() && !keys.is_empty() {
@@ -603,6 +512,120 @@ pub(crate) fn parse_jwks_document(
     }
 
     Ok(out)
+}
+
+fn invalid_jwks_trust() -> CommandError {
+    CommandError::authentication("invalid_jwks", "Invalid JWKS trust metadata")
+}
+
+fn jwk_trust_metadata(
+    key_value: &serde_json::Value,
+) -> Result<(bool, Option<uuid::Uuid>), CommandError> {
+    let status = key_value
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(invalid_jwks_trust)?;
+    let trusted = match status {
+        "active" | "retiring" => true,
+        "pending" | "revoked" => false,
+        _ => return Err(invalid_jwks_trust()),
+    };
+    let organization_id = match key_value
+        .get("trust_scope")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("platform")
+            if key_value
+                .get("organization_id")
+                .is_some_and(serde_json::Value::is_null) =>
+        {
+            None
+        }
+        Some("organization") => {
+            let raw = key_value
+                .get("organization_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(invalid_jwks_trust)?;
+            let id = uuid::Uuid::parse_str(raw).map_err(|_| invalid_jwks_trust())?;
+            if id.to_string() != raw {
+                return Err(invalid_jwks_trust());
+            }
+            Some(id)
+        }
+        _ => return Err(invalid_jwks_trust()),
+    };
+    Ok((trusted, organization_id))
+}
+
+fn jwk_rsa_decoding_key(
+    key_value: &serde_json::Value,
+    kid: &str,
+) -> Result<DecodingKey, CommandError> {
+    let kty = key_value.get("kty").and_then(|v| v.as_str()).unwrap_or("");
+    if kty != "RSA" {
+        debug!(
+            kid = kid,
+            kty = kty,
+            "Skipping non-RSA JWK (HMAC never trusted)"
+        );
+        return Err(invalid_jwks_trust());
+    }
+    if let Some(alg) = key_value.get("alg").and_then(|v| v.as_str()) {
+        if alg != "RS256" {
+            debug!(kid = kid, alg = alg, "Skipping JWK with non-RS256 alg");
+            return Err(invalid_jwks_trust());
+        }
+    }
+    if key_value
+        .get("use")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|usage| usage != "sig")
+    {
+        return Err(invalid_jwks_trust());
+    }
+
+    let jwk: Jwk = serde_json::from_value(key_value.clone()).map_err(|e| {
+        CommandError::authentication(
+            "invalid_jwks",
+            format!("failed to parse JWK kid={kid}: {e}"),
+        )
+    })?;
+    DecodingKey::from_jwk(&jwk).map_err(|e| {
+        CommandError::authentication(
+            "invalid_jwks",
+            format!("failed to build decoding key for kid={kid}: {e}"),
+        )
+    })
+}
+
+fn parse_jwk_entry(
+    key_value: &serde_json::Value,
+) -> Result<(String, CachedJwk), CommandError> {
+    let (trusted, organization_id) = jwk_trust_metadata(key_value)?;
+    let Some(kid) = key_value.get("kid").and_then(|v| v.as_str()) else {
+        return Err(invalid_jwks_trust());
+    };
+    let Some(iss) = key_value.get("iss").and_then(|v| v.as_str()) else {
+        return Err(invalid_jwks_trust());
+    };
+    if iss.trim().is_empty() || kid.is_empty() || kid.len() > MAX_KID_BYTES {
+        return Err(invalid_jwks_trust());
+    }
+    if kid.contains('/') || kid.contains('\\') || kid.contains("://") || kid.contains("..") {
+        debug!(kid = kid, "Skipping JWK with dangerous kid");
+        return Err(invalid_jwks_trust());
+    }
+    let decoding_key = jwk_rsa_decoding_key(key_value, kid)?;
+    Ok((
+        kid.to_string(),
+        CachedJwk {
+            decoding_key,
+            iss: iss.to_string(),
+            organization_id,
+            trusted,
+            acquired_at: Instant::now(),
+        },
+    ))
 }
 
 #[cfg(all(test, feature = "testing"))]
@@ -665,7 +688,10 @@ mod freshness_tests {
         }
         assert_eq!(cache.negative.read().unwrap().len(), MAX_NEGATIVE_KIDS);
         let expiry = *cache.negative.read().unwrap().get("0").unwrap();
-        assert!(cache.is_negatively_cached_at("0", expiry - Duration::from_nanos(1)));
+        assert!(cache.is_negatively_cached_at(
+            "0",
+            expiry.saturating_sub(Duration::from_nanos(1))
+        ));
         assert!(!cache.is_negatively_cached_at("0", expiry));
         assert!(!cache.negative.read().unwrap().contains_key("0"));
     }

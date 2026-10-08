@@ -1,6 +1,10 @@
 //! Private clock/state seams: no caller-supplied Instant and no 60-second sleeps.
 use super::super::jwt_handler::UserIdExtractor;
-use super::*;
+use super::{
+    normalize_authority_url, Arc, AtomicBool, CommandError, Duration, HashMap, Instant,
+    JwksCache, LocalJwksSeed, Ordering, MAX_DOCUMENT_BYTES, MAX_KID_BYTES, MAX_NEGATIVE_KIDS,
+    MAX_SNAPSHOT_AGE,
+};
 use crate::rustycog_config::{AuthConfig, JwtAuthConfig};
 use crate::testing::http::jwt::{
     test_rs256_jwks_json, TEST_JWT_AUDIENCE, TEST_PLATFORM_ISSUER, TEST_RS256_KID,
@@ -8,6 +12,12 @@ use crate::testing::http::jwt::{
 use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
 const AUTHORITY: &str = "http://publisher.internal/iam/.well-known/jwks.json";
+
+fn checked_ago(age: Duration) -> Instant {
+    Instant::now()
+        .checked_sub(age)
+        .expect("test Instant supports subtracting the requested duration")
+}
 
 fn auth(url: &str) -> AuthConfig {
     AuthConfig {
@@ -29,7 +39,7 @@ async fn seed(url: &str, document: String) -> LocalJwksSeed {
 }
 
 fn seeded_cache(url: &str, seed: LocalJwksSeed) -> Arc<JwksCache> {
-    let cache = JwksCache::from_url(url.into(), 60, 30).unwrap();
+    let cache = JwksCache::from_url(url, 60, 30).unwrap();
     cache
         .install_local_seed(seed, TEST_PLATFORM_ISSUER)
         .unwrap();
@@ -75,11 +85,11 @@ async fn seed_factory_dates_before_async_reader_and_install_does_not_reage() {
 async fn seed_constructor_rejects_sixty_second_boundary_and_keeps_construction_delay() {
     for age in [60, 61] {
         let mut captured = seed(AUTHORITY, test_rs256_jwks_json()).await;
-        captured.snapshot.acquired_at = Instant::now() - Duration::from_secs(age);
+        captured.snapshot.acquired_at = checked_ago(Duration::from_secs(age));
         assert!(UserIdExtractor::from_config_with_seeded_jwks(auth(AUTHORITY), captured).is_err());
     }
     let mut captured = seed(AUTHORITY, test_rs256_jwks_json()).await;
-    let original = Instant::now() - Duration::from_secs(30);
+    let original = checked_ago(Duration::from_secs(30));
     captured.snapshot.acquired_at = original;
     let cache = seeded_cache(AUTHORITY, captured);
     let key = cache.get_cached(TEST_RS256_KID).unwrap();
@@ -104,7 +114,7 @@ async fn seed_constructor_rejects_sixty_second_boundary_and_keeps_construction_d
         .unwrap()
         .as_mut()
         .unwrap()
-        .acquired_at = Instant::now() - MAX_SNAPSHOT_AGE;
+        .acquired_at = checked_ago(MAX_SNAPSHOT_AGE);
     assert!(!cache.still_authorizes(TEST_RS256_KID, original));
 }
 
@@ -439,7 +449,12 @@ async fn seed_negative_hits_and_stale_bursts_remain_bounded_nonwaiting_and_do_no
     cache.insert_negative(&"x".repeat(MAX_KID_BYTES + 1));
     assert_eq!(cache.negative.read().unwrap().len(), MAX_NEGATIVE_KIDS);
     let negative_expiry = cache.negative.read().unwrap()["unknown-0"];
-    assert!(cache.is_negatively_cached_at("unknown-0", negative_expiry - Duration::from_nanos(1)));
+    assert!(cache.is_negatively_cached_at(
+        "unknown-0",
+        negative_expiry
+            .checked_sub(Duration::from_nanos(1))
+            .expect("negative cache expiry")
+    ));
     assert!(cache.resolve_key("unknown-1").await.is_err());
     assert_eq!(
         cache.get_cached(TEST_RS256_KID).unwrap().acquired_at,
@@ -448,7 +463,7 @@ async fn seed_negative_hits_and_stale_bursts_remain_bounded_nonwaiting_and_do_no
     assert!(!cache.is_negatively_cached_at("unknown-0", negative_expiry));
     assert!(server.received_requests().await.unwrap().is_empty());
 
-    let expired = Instant::now() - MAX_SNAPSHOT_AGE;
+    let expired = checked_ago(MAX_SNAPSHOT_AGE);
     cache
         .snapshot
         .write()
@@ -485,7 +500,7 @@ async fn seed_stale_outage_and_refresh_throttle_do_not_renew_acquisition() {
         .await;
     let url = server.uri();
     let cache = seeded_cache(&url, seed(&url, test_rs256_jwks_json()).await);
-    let expired = Instant::now() - MAX_SNAPSHOT_AGE;
+    let expired = checked_ago(MAX_SNAPSHOT_AGE);
     cache
         .snapshot
         .write()

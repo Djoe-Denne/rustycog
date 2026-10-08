@@ -1,10 +1,17 @@
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{
     encode,
     jwk::{AlgorithmParameters, CommonParameters, Jwk, RSAKeyParameters, RSAKeyType},
     Algorithm, EncodingKey, Header,
 };
+use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
+use rsa::rand_core::{CryptoRng, RngCore};
+use rsa::traits::PublicKeyParts;
+use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde::Serialize;
+use std::sync::OnceLock;
 use uuid::Uuid;
 
 pub const TEST_HS256_SECRET: &str = "rustycog-test-hs256-secret";
@@ -17,49 +24,89 @@ pub const TEST_RS256_KID: &str = "test-rs256-kid-01";
 /// Platform issuer matching the custom JWK `iss` field in [`test_rs256_jwks_json`].
 pub const TEST_PLATFORM_ISSUER: &str = "http://127.0.0.1/iam";
 
-/// Fixed RSA private key (PKCS#8 PEM) for RS256 test tokens.
-pub const TEST_RS256_PRIVATE_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCgJlj6aQXeKeST
-5lNFKEG5Q6SptXk62gX5k2lAmQCdBdyYqhS/pEBcwemGC+V1zSQAA+p5Fe4HnMyT
-f8mLjmjrxufsXmFIyOIjHhywXne4msS4AN16fQprITUxJPr/yLnvCQV+IIR3h6X0
-1GqqAKmtR4LXcY7gmMmLOR3PY/2Xk5WIlue9gKUvQbBcXqMuuc4ZlBPpthXoqaTY
-LLwZCj5Gz2Xgb+zFYG4w0Y2gcJmYlOplRmEVlmQP2xTkFlS6k4cHsX4asL8ercXY
-nFELanLJCq/NzkKPVWF3X2tbBQoBt5MhuXExRYmOTtl97PL+ltqapoQ80UGG6zha
-zBVfyhZbAgMBAAECggEAOfl313qiZajbttC3zz7CABulJcxsjOn1JMKA5SIeLzm6
-gEd9yFxg8lM+QsjWsZzoDdtdC6VtLDNOeYzWfJ86izPPrGkEJbGW72iMsSoZg+n/
-Ea86fgd6+Iomc9pzxJm4+XfWFbEW0yB3athknpMr2W8cRfq1Ysfcmfo8uOF1IWP4
-aumf9YqH3cvCyviVzHFhoiP7UKZ59xrPvZWB/z/jRSUIgMP+N4u8DmA5QxyQna2W
-MdX4B6KI4WBSN8XZrO+PogdljBQV3erOyxVghxwTnjlNoYcGy6cl2o/BFDE9GYdt
-qnilmCFpHWxDnZc/KjXV/egjhKeRwi5LFd63hMdjiQKBgQDXV1dgQFUNBdOSKZtI
-rWxyajiyhaT+p5TQQ/nyASwRyLVGF5jEatB7SDIQlCzM1BsKUmNSsvDQiUus0fAY
-0Uw+RmQC+KvxC4KS+M2qo3gtNN9Uda8lDytbuDE3p/WlIfbLP9yAiUlM+z4r4Wh7
-WulEPbCNr/tjvNTylT1lESIeyQKBgQC+Y0tQW7sEizfNh/otZRwnCalkHTPCc1c3
-JWoqYpq2D4y9VtrOFct1Ig7YZDyNNAbDZLRS53NYnv5AUq0OkPt8QH7pXoZ28Pi+
-zTleAG/jJ7QqiPq4fnGUbYF586jdWPJVjsMD3aFgr9FdQuHJWILe8AjLGrKWcJAS
-vdP9+kDqAwKBgF45NV5ER/K+zehylCOk3oLhv5U9rQhQQ2ktlTwzDxlo/QiCYrHv
-GvIWkPF4JHIrjPljO1qAOabFrHseETSKwBWvrystq+543tV4UGWNyZPeQqouJEjO
-7mXfnol/0JhE2Dvu4YjMiWpJtNZ2dsUi7laRt6MHkbP+eB789jQ23vshAoGBAIZM
-2NXIv3YHFsgfQXVAO8m14Q3EI7zpS/6Un/1iLSx8b5UobZSufyUTb1Fp8+TPbG3s
-3d8VcaJ0FXoeWAFMeHo/rMbGbSf9+Bnv/qW2vTaJzWer1ODMISbI0GrMXLQ3iEqe
-OCbD8pCXtaKKCWfUzgyhWjKblJrWsGroCWDBZYUtAoGARD8/bBC14SgPtA/oUIks
-OLDpRNV1O5ul2myjYW4oDM0ULfSJQY18IPKW89LCkqWKXw4YZFKYYScUWbbIn+V+
-RKympZHcMLgYl2GMPtF+/OgFVlKb8TBRInnZQTjcD0T1QZ/bZAVJlcsZdL0KkDFx
-nC0J5qLklNHdwGJdrz9IFLU=
------END PRIVATE KEY-----"#;
+struct TestRs256Material {
+    private_pem: String,
+    public_pem: String,
+    n: String,
+    e: String,
+}
 
-/// Fixed RSA public key (SPKI PEM) matching [`TEST_RS256_PRIVATE_PEM`].
-pub const TEST_RS256_PUBLIC_PEM: &str = r#"-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoCZY+mkF3inkk+ZTRShB
-uUOkqbV5OtoF+ZNpQJkAnQXcmKoUv6RAXMHphgvldc0kAAPqeRXuB5zMk3/Ji45o
-68bn7F5hSMjiIx4csF53uJrEuADden0KayE1MST6/8i57wkFfiCEd4el9NRqqgCp
-rUeC13GO4JjJizkdz2P9l5OViJbnvYClL0GwXF6jLrnOGZQT6bYV6Kmk2Cy8GQo+
-Rs9l4G/sxWBuMNGNoHCZmJTqZUZhFZZkD9sU5BZUupOHB7F+GrC/Hq3F2JxRC2py
-yQqvzc5Cj1Vhd19rWwUKAbeTIblxMUWJjk7Zfezy/pbamqaEPNFBhus4WswVX8oW
-WwIDAQAB
------END PUBLIC KEY-----"#;
+/// Deterministic CSPRNG stand-in so the fixture is generated at process start,
+/// not pasted as PKCS#8 in the source.
+struct SplitMix64(u64);
 
-const TEST_RS256_N: &str = "oCZY-mkF3inkk-ZTRShBuUOkqbV5OtoF-ZNpQJkAnQXcmKoUv6RAXMHphgvldc0kAAPqeRXuB5zMk3_Ji45o68bn7F5hSMjiIx4csF53uJrEuADden0KayE1MST6_8i57wkFfiCEd4el9NRqqgCprUeC13GO4JjJizkdz2P9l5OViJbnvYClL0GwXF6jLrnOGZQT6bYV6Kmk2Cy8GQo-Rs9l4G_sxWBuMNGNoHCZmJTqZUZhFZZkD9sU5BZUupOHB7F-GrC_Hq3F2JxRC2pyyQqvzc5Cj1Vhd19rWwUKAbeTIblxMUWJjk7Zfezy_pbamqaEPNFBhus4WswVX8oWWw";
-const TEST_RS256_E: &str = "AQAB";
+impl CryptoRng for SplitMix64 {}
+
+impl RngCore for SplitMix64 {
+    fn next_u32(&mut self) -> u32 {
+        self.next_u64() as u32
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        for chunk in dest.chunks_mut(8) {
+            let n = self.next_u64().to_le_bytes();
+            chunk.copy_from_slice(&n[..chunk.len()]);
+        }
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rsa::rand_core::Error> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+
+fn generate_test_rs256_material() -> TestRs256Material {
+    let mut rng = SplitMix64(0xA1F0_4A11_C0DE_5EED);
+    let private = RsaPrivateKey::new(&mut rng, 2048)
+        .unwrap_or_else(|err| panic!("test RS256 fixture keygen: {err}"));
+    let public = RsaPublicKey::from(&private);
+    let private_pem = private
+        .to_pkcs8_pem(LineEnding::LF)
+        .unwrap_or_else(|err| panic!("test RS256 PKCS#8 encode: {err}"))
+        .to_string();
+    let public_pem = public
+        .to_public_key_pem(LineEnding::LF)
+        .unwrap_or_else(|err| panic!("test RS256 SPKI encode: {err}"));
+    TestRs256Material {
+        n: URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+        e: URL_SAFE_NO_PAD.encode(public.e().to_bytes_be()),
+        private_pem,
+        public_pem,
+    }
+}
+
+fn test_rs256_material() -> &'static TestRs256Material {
+    static CELL: OnceLock<TestRs256Material> = OnceLock::new();
+    CELL.get_or_init(generate_test_rs256_material)
+}
+
+/// Process-local RSA private key (PKCS#8 PEM) for RS256 test tokens.
+#[must_use]
+pub fn test_rs256_private_pem() -> &'static str {
+    test_rs256_material().private_pem.as_str()
+}
+
+/// Process-local RSA public key (SPKI PEM) matching [`test_rs256_private_pem`].
+#[must_use]
+pub fn test_rs256_public_pem() -> &'static str {
+    test_rs256_material().public_pem.as_str()
+}
+
+fn test_rs256_n() -> &'static str {
+    test_rs256_material().n.as_str()
+}
+
+fn test_rs256_e() -> &'static str {
+    test_rs256_material().e.as_str()
+}
 
 #[derive(Debug, Serialize)]
 struct TestClaims {
@@ -111,11 +158,11 @@ pub fn create_jwt_token_with_secret(user_id: Uuid, secret: &str) -> String {
 ///
 /// # Panics
 ///
-/// Panics if the token cannot be encoded with the fixed test RSA key.
+/// Panics if the token cannot be encoded with the test RSA fixture key.
 #[must_use]
 #[allow(clippy::expect_used)]
 pub fn create_rs256_jwt_token(user_id: Uuid) -> String {
-    encode_rs256(user_id, Rs256TokenOptions::default(), None)
+    encode_rs256(user_id, &Rs256TokenOptions::default(), None)
 }
 
 /// Mint a platform fixture token with the test instance's configured issuer.
@@ -145,7 +192,7 @@ pub enum TestSigningKeyStatus {
     Revoked,
 }
 
-/// A typed canonical JWK using the fixed nonsecret RSA fixture material.
+/// A typed canonical JWK using the process-local RSA fixture material.
 ///
 /// Constructors bind scope and organization together, never infer trust from
 /// issuer text. Wire names match the IAM publisher, including platform null.
@@ -172,8 +219,8 @@ impl CanonicalJwk {
             usage: "sig",
             alg: "RS256",
             kid: TEST_RS256_KID.into(),
-            n: TEST_RS256_N,
-            e: TEST_RS256_E,
+            n: test_rs256_n(),
+            e: test_rs256_e(),
             iss: issuer.into(),
             status: TestSigningKeyStatus::Active,
             trust_scope: "platform",
@@ -249,7 +296,7 @@ pub fn create_organization_rs256_jwt_token(
     let kid = organization_test_kid(organization_id);
     encode_rs256(
         user_id,
-        Rs256TokenOptions {
+        &Rs256TokenOptions {
             iss: Some(issuer),
             kid: Some(Some(&kid)),
             ..Default::default()
@@ -258,7 +305,7 @@ pub fn create_organization_rs256_jwt_token(
     )
 }
 
-/// JWKS JSON document matching [`TEST_RS256_PRIVATE_PEM`] / [`TEST_RS256_KID`].
+/// JWKS JSON document matching [`test_rs256_private_pem`] / [`TEST_RS256_KID`].
 #[must_use]
 pub fn test_rs256_jwks_json() -> String {
     test_rs256_jwks_json_with_iss(TEST_PLATFORM_ISSUER)
@@ -298,20 +345,14 @@ pub fn create_rs256_jwt_token_with_options(
     user_id: Uuid,
     options: Rs256TokenOptions<'_>,
 ) -> String {
-    encode_rs256(user_id, options, None)
+    encode_rs256(user_id, &options, None)
 }
 
 #[allow(clippy::expect_used)]
-fn encode_rs256(user_id: Uuid, options: Rs256TokenOptions<'_>, org: Option<Uuid>) -> String {
+fn encode_rs256(user_id: Uuid, options: &Rs256TokenOptions<'_>, org: Option<Uuid>) -> String {
     let iss = options.iss.unwrap_or(TEST_PLATFORM_ISSUER);
-    let kid = match options.kid {
-        None => Some(TEST_RS256_KID),
-        Some(inner) => inner,
-    };
-    let typ = match options.typ {
-        None => Some("aiforall-access+jwt"),
-        Some(inner) => inner,
-    };
+    let kid = options.kid.unwrap_or(Some(TEST_RS256_KID));
+    let typ = options.typ.unwrap_or(Some("aiforall-access+jwt"));
     let now = Utc::now();
     let claims = TestClaims {
         sub: user_id.to_string(),
@@ -333,13 +374,13 @@ fn encode_rs256(user_id: Uuid, options: Rs256TokenOptions<'_>, org: Option<Uuid>
             common: CommonParameters::default(),
             algorithm: AlgorithmParameters::RSA(RSAKeyParameters {
                 key_type: RSAKeyType::RSA,
-                n: TEST_RS256_N.to_string(),
-                e: TEST_RS256_E.to_string(),
+                n: test_rs256_n().to_string(),
+                e: test_rs256_e().to_string(),
             }),
         });
     }
 
-    let key = EncodingKey::from_rsa_pem(TEST_RS256_PRIVATE_PEM.as_bytes())
+    let key = EncodingKey::from_rsa_pem(test_rs256_private_pem().as_bytes())
         .expect("test RSA private key must parse");
     encode(&header, &claims, &key).expect("failed to encode RS256 test JWT")
 }

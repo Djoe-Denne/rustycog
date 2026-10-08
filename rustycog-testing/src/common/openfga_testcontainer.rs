@@ -314,7 +314,7 @@ impl TestOpenFga {
     ///
     /// # Errors
     ///
-    /// Returns an error if the OpenFGA write HTTP call fails or the store
+    /// Returns an error if the `OpenFGA` write HTTP call fails or the store
     /// rejects the tuple for a reason other than a duplicate.
     pub async fn write_tuple(
         &self,
@@ -363,7 +363,7 @@ impl TestOpenFga {
     ///
     /// # Errors
     ///
-    /// Returns an error if the OpenFGA delete HTTP call fails or the store
+    /// Returns an error if the `OpenFGA` delete HTTP call fails or the store
     /// rejects the delete for a reason other than an unknown tuple.
     pub async fn delete_tuple(
         &self,
@@ -410,7 +410,7 @@ impl TestOpenFga {
     ///
     /// # Errors
     ///
-    /// Returns an error if the OpenFGA read HTTP call fails or the response
+    /// Returns an error if the `OpenFGA` read HTTP call fails or the response
     /// cannot be decoded.
     pub async fn read_tuples(
         &self,
@@ -492,7 +492,7 @@ pub struct TupleKey {
     pub object: String,
 }
 
-/// Map an object type and [`Permission`] to the writable OpenFGA relation.
+/// Map an object type and [`Permission`] to the writable `OpenFGA` relation.
 ///
 /// The returned relation is the one a tuple must be written on so that
 /// `Check(subject, Permission::relation(), object)` succeeds against the

@@ -1,8 +1,8 @@
 //! Private clock/state seams: no caller-supplied Instant and no 60-second sleeps.
 use super::super::jwt_handler::UserIdExtractor;
 use super::{
-    normalize_authority_url, Arc, AtomicBool, CommandError, Duration, HashMap, Instant,
-    JwksCache, LocalJwksSeed, Ordering, MAX_DOCUMENT_BYTES, MAX_KID_BYTES, MAX_NEGATIVE_KIDS,
+    normalize_authority_url, Arc, AtomicBool, CommandError, Duration, HashMap, Instant, JwksCache,
+    LocalJwksSeed, Ordering, MAX_DOCUMENT_BYTES, MAX_KID_BYTES, MAX_NEGATIVE_KIDS,
     MAX_SNAPSHOT_AGE,
 };
 use crate::rustycog_config::{AuthConfig, JwtAuthConfig};

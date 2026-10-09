@@ -1,12 +1,12 @@
 //! Unit tests for ADR-0304 RS256 + JWKS verification (inline and seeded URL caches).
 
-use super::{ACCESS_TOKEN_TYP, LocalJwksSeed, UserIdExtractor};
+use super::{LocalJwksSeed, UserIdExtractor, ACCESS_TOKEN_TYP};
 use crate::rustycog_config::{AuthConfig, JwtAuthConfig};
 use crate::testing::http::jwt::{
     create_jwt_token_with_secret, create_rs256_jwt_token, create_rs256_jwt_token_with_issuer,
     create_rs256_jwt_token_with_options, test_rs256_jwks_json, test_rs256_jwks_json_with_iss,
-    CanonicalJwk, Rs256TokenOptions, TEST_HS256_SECRET, TEST_JWT_AUDIENCE, TEST_PLATFORM_ISSUER,
-    TEST_RS256_KID,
+    test_rs256_private_pem, test_rs256_public_pem, CanonicalJwk, Rs256TokenOptions,
+    TEST_HS256_SECRET, TEST_JWT_AUDIENCE, TEST_PLATFORM_ISSUER, TEST_RS256_KID,
 };
 use jsonwebtoken::{Algorithm, Header};
 use std::sync::Arc;
@@ -20,10 +20,8 @@ fn signed_claims_with_kid(claims: &serde_json::Value, kid: &str) -> String {
     let mut header = Header::new(Algorithm::RS256);
     header.typ = Some(ACCESS_TOKEN_TYP.to_string());
     header.kid = Some(kid.to_string());
-    let key = jsonwebtoken::EncodingKey::from_rsa_pem(
-        crate::testing::http::jwt::TEST_RS256_PRIVATE_PEM.as_bytes(),
-    )
-    .expect("nonsecret fixture key");
+    let key = jsonwebtoken::EncodingKey::from_rsa_pem(test_rs256_private_pem().as_bytes())
+        .expect("nonsecret fixture key");
     jsonwebtoken::encode(&header, claims, &key).expect("fixture token")
 }
 
@@ -317,10 +315,7 @@ async fn seeded_hs256_window_uses_only_its_explicit_independent_secret() {
     )
     .unwrap();
     assert_eq!(extractor.extract_principal(&hs).await.unwrap().sub, user);
-    for wrong in [
-        "wrong-independent-secret",
-        crate::testing::http::jwt::TEST_RS256_PUBLIC_PEM,
-    ] {
+    for wrong in ["wrong-independent-secret", test_rs256_public_pem()] {
         let token = jsonwebtoken::encode(
             &header,
             &claims,

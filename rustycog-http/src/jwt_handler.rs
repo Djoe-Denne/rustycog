@@ -201,13 +201,13 @@ impl UserIdExtractor {
     ) -> Result<Self, CommandError> {
         let has_inline = inline_jwks.is_some();
         let has_url = jwt.jwks_url.as_ref().is_some_and(|u| !u.trim().is_empty());
-        let has_secret = jwt
+        let hs256_configured = jwt
             .hs256_secret
             .as_ref()
             .is_some_and(|s| !s.trim().is_empty());
 
         let accepted_algorithms =
-            resolve_allowed_algorithms(&jwt, has_url || has_inline, has_secret)?;
+            resolve_allowed_algorithms(&jwt, has_url || has_inline, hs256_configured)?;
         let hmac_enabled = accepted_algorithms.contains(&Algorithm::HS256);
         let rsa_enabled = accepted_algorithms.contains(&Algorithm::RS256);
 
@@ -228,7 +228,7 @@ impl UserIdExtractor {
             None
         };
 
-        let jwks = if rsa_enabled {
+        let jwks_cache = if rsa_enabled {
             if let Some(json) = inline_jwks {
                 Some(JwksCache::from_inline_json(json)?)
             } else if has_url {
@@ -259,7 +259,7 @@ impl UserIdExtractor {
             default_user_id,
             hs256_issuer: trim_opt(jwt.issuer),
             audience: trim_opt(jwt.audience),
-            jwks,
+            jwks: jwks_cache,
             gateway_san: None,
         })
     }
@@ -640,7 +640,7 @@ mod jwt_rs256_tests;
 
 #[cfg(test)]
 mod claim_time_tests {
-    use super::*;
+    use super::{validate_claim_times, Algorithm, Validation};
 
     #[test]
     fn optional_nbf_and_iat_use_the_same_bounded_skew() {

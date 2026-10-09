@@ -35,13 +35,11 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-async fn peer_handler(req: Request) -> String {
-    req.extensions()
-        .get::<PeerClientCertificate>()
-        .map_or_else(
-            || "none".to_string(),
-            |cert| format!("der:{}", hex_encode(&cert.der)),
-        )
+fn peer_handler(req: Request) -> String {
+    req.extensions().get::<PeerClientCertificate>().map_or_else(
+        || "none".to_string(),
+        |cert| format!("der:{}", hex_encode(&cert.der)),
+    )
 }
 
 fn new_ca(common_name: &str) -> (Certificate, KeyPair) {

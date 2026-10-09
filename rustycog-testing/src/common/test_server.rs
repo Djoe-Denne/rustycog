@@ -34,9 +34,8 @@ where
     let mut server_guard = server_mutex.lock().await;
     let mut descriptor_type_guard = descriptor_type_mutex.lock().await;
     let descriptor_type = TypeId::of::<D>();
-    let descriptor_changed = descriptor_type_guard
-        .map(|existing| existing != descriptor_type)
-        .unwrap_or(false);
+    let descriptor_changed =
+        descriptor_type_guard.is_some_and(|existing| existing != descriptor_type);
 
     if descriptor_changed {
         if let Some(handle) = server_guard.take() {

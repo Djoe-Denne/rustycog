@@ -27,8 +27,9 @@ impl Endpoint {
         if !matches!(mode, "local" | "bridge") {
             return Err("explicit runner mode local|bridge required".into());
         }
+        let fallback_host = (mode == "local").then_some("127.0.0.1");
         let host = host
-            .or_else(|| (mode == "local").then_some("127.0.0.1"))
+            .or(fallback_host)
             .ok_or("bridge runner host required")?;
         if host.is_empty()
             || host.len() > 253

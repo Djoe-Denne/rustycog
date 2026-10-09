@@ -46,9 +46,7 @@ pub fn install_crypto_provider() {
 /// Returns an error if the crypto provider cannot be used, the server
 /// certificate/key or client CA PEM cannot be loaded, or rustls rejects the
 /// resulting configuration.
-pub fn rustls_config_with_client_auth(
-    config: &ServerConfig,
-) -> anyhow::Result<RustlsConfig> {
+pub fn rustls_config_with_client_auth(config: &ServerConfig) -> anyhow::Result<RustlsConfig> {
     install_crypto_provider();
 
     let certs = load_certs(&config.tls_cert_path)?;

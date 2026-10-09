@@ -23,7 +23,7 @@ use super::{Permission, PermissionChecker, RelationshipTuple, ResourceRef, Subje
 // OpenFGA
 // =============================================================================
 
-/// Production permission checker that calls `OpenFGA`'s `Check` endpoint.
+/// Production permission checker that calls the `OpenFGA` `Check` endpoint.
 pub struct OpenFgaPermissionChecker {
     config: OpenFgaClientConfig,
     http: reqwest::Client,
@@ -63,7 +63,7 @@ impl OpenFgaPermissionChecker {
 
     /// Read stored relationship tuples. Pass `None` to leave a field unconstrained.
     ///
-    /// This is the `OpenFGA` Read API (persisted tuples only, not computed
+    /// This is the `OpenFGA` `Read` API (persisted tuples only, not computed
     /// usersets). Pages through `continuation_token` until exhausted.
     ///
     /// # Errors
@@ -365,7 +365,7 @@ impl PermissionChecker for CachedPermissionChecker {
 /// Instrumented `PermissionChecker` that emits a `tracing` span and a
 /// structured event per decision.
 ///
-/// Point a `tracing` subscriber / OpenTelemetry bridge at these events to
+/// Point a `tracing` subscriber / `OpenTelemetry` bridge at these events to
 /// capture p50/p95/p99 latency, allow vs deny rate, and error counts. When
 /// no subscriber is wired the overhead is a single `Instant::now()` pair.
 pub struct MetricsPermissionChecker {

@@ -135,7 +135,7 @@ pub struct JwksCache {
 impl JwksCache {
     /// Install only during construction of a fresh URL-backed extractor.
     /// The opaque seed is consumed, with no second fallback copy or re-aging.
-    pub(crate) fn install_local_seed(
+    pub fn install_local_seed(
         &self,
         seed: LocalJwksSeed,
         platform_issuer: &str,
@@ -166,11 +166,13 @@ impl JwksCache {
                 "Local JWKS seed has expired",
             ));
         }
-        let mut snapshot = self
-            .snapshot
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
-        *snapshot = Some(seed.snapshot);
+        {
+            let mut snapshot = self
+                .snapshot
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
+            *snapshot = Some(seed.snapshot);
+        }
         Ok(())
     }
 
@@ -180,7 +182,7 @@ impl JwksCache {
     ///
     /// Returns [`CommandError`] if the document cannot be parsed or contains
     /// invalid RSA keys or missing canonical trust metadata. Empty sets are valid.
-    pub(crate) fn from_inline_json(jwks_json: &str) -> Result<Arc<Self>, CommandError> {
+    pub fn from_inline_json(jwks_json: &str) -> Result<Arc<Self>, CommandError> {
         let keys = parse_jwks_document(jwks_json)?;
         Ok(Arc::new(Self {
             url: None,
@@ -203,7 +205,7 @@ impl JwksCache {
     /// # Errors
     ///
     /// Returns [`CommandError`] if `url` is empty after trimming.
-    pub(crate) fn from_url(
+    pub fn from_url(
         url: &str,
         refresh_interval_secs: u64,
         negative_cache_ttl_secs: u64,
@@ -247,10 +249,7 @@ impl JwksCache {
     ///
     /// Returns [`CommandError`] if the kid is unknown / negatively cached, or
     /// if a network refresh fails and the kid was never seen.
-    pub(crate) async fn resolve_key(
-        self: &Arc<Self>,
-        kid: &str,
-    ) -> Result<CachedJwk, CommandError> {
+    pub async fn resolve_key(self: &Arc<Self>, kid: &str) -> Result<CachedJwk, CommandError> {
         if kid.is_empty() || kid.len() > MAX_KID_BYTES {
             return Err(CommandError::authentication(
                 "invalid_token",
@@ -368,6 +367,7 @@ impl JwksCache {
             }
             bytes.extend_from_slice(&chunk);
         }
+        drop(response);
         let body = String::from_utf8(bytes).map_err(|_| {
             CommandError::authentication("invalid_jwks", "JWKS document is not UTF-8")
         })?;
@@ -402,7 +402,7 @@ impl JwksCache {
         Some(key)
     }
 
-    pub(crate) fn still_authorizes(&self, kid: &str, acquired_at: Instant) -> bool {
+    pub fn still_authorizes(&self, kid: &str, acquired_at: Instant) -> bool {
         self.get_cached(kid)
             .is_some_and(|key| key.trusted && key.acquired_at == acquired_at)
     }
@@ -469,24 +469,25 @@ impl JwksCache {
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            let _guard = self.refresh_lock.lock().await;
-            if let Err(e) = self.fetch_and_apply().await {
+            let result = {
+                let _guard = self.refresh_lock.lock().await;
+                self.fetch_and_apply().await
+            };
+            if let Err(e) = result {
                 warn!("Periodic JWKS refresh failed (snapshot age unchanged): {e}");
             }
         }
     }
 }
 
-/// Parse a JWKS JSON document into `kid` → (`DecodingKey`, `iss`).
+/// Parse a `JWKS` JSON document into `kid` → (`DecodingKey`, `iss`).
 ///
-/// The custom JWK field `iss` is required for every key we accept.
+/// The custom `JWK` field `iss` is required for every key we accept.
 ///
 /// # Errors
 ///
 /// Returns [`CommandError`] on invalid JSON, keys or canonical trust metadata.
-pub fn parse_jwks_document(
-    jwks_json: &str,
-) -> Result<HashMap<String, CachedJwk>, CommandError> {
+pub fn parse_jwks_document(jwks_json: &str) -> Result<HashMap<String, CachedJwk>, CommandError> {
     let root: serde_json::Value = serde_json::from_str(jwks_json).map_err(|e| {
         CommandError::authentication("invalid_jwks", format!("invalid JWKS JSON: {e}"))
     })?;
@@ -598,9 +599,7 @@ fn jwk_rsa_decoding_key(
     })
 }
 
-fn parse_jwk_entry(
-    key_value: &serde_json::Value,
-) -> Result<(String, CachedJwk), CommandError> {
+fn parse_jwk_entry(key_value: &serde_json::Value) -> Result<(String, CachedJwk), CommandError> {
     let (trusted, organization_id) = jwk_trust_metadata(key_value)?;
     let Some(kid) = key_value.get("kid").and_then(|v| v.as_str()) else {
         return Err(invalid_jwks_trust());
@@ -634,7 +633,10 @@ mod seed_tests;
 
 #[cfg(test)]
 mod freshness_tests {
-    use super::*;
+    use super::{
+        parse_jwks_document, CachedJwk, DecodingKey, Duration, HashMap, Instant, JwksCache,
+        MAX_NEGATIVE_KIDS,
+    };
 
     fn keys() -> HashMap<String, CachedJwk> {
         // State-machine-only fixture; cryptographic/JWKS tests use RSA fixtures.
@@ -688,10 +690,7 @@ mod freshness_tests {
         }
         assert_eq!(cache.negative.read().unwrap().len(), MAX_NEGATIVE_KIDS);
         let expiry = *cache.negative.read().unwrap().get("0").unwrap();
-        assert!(cache.is_negatively_cached_at(
-            "0",
-            expiry.saturating_sub(Duration::from_nanos(1))
-        ));
+        assert!(cache.is_negatively_cached_at("0", expiry.saturating_sub(Duration::from_nanos(1))));
         assert!(!cache.is_negatively_cached_at("0", expiry));
         assert!(!cache.negative.read().unwrap().contains_key("0"));
     }

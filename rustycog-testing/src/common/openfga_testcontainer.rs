@@ -33,7 +33,6 @@ use rustycog::config::{load_config_part, OpenFgaClientConfig};
 use rustycog::permission::{Permission, ResourceRef, Subject};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use testcontainers::{core::ContainerPort, runners::AsyncRunner, GenericImage, ImageExt};
@@ -46,9 +45,6 @@ const OPENFGA_IMAGE_TAG: &str = "v1.5.0";
 /// Global test `OpenFGA` container instance.
 static TEST_OPENFGA_CONTAINER: OnceLock<Arc<Mutex<Option<Arc<TestOpenFgaContainer>>>>> =
     OnceLock::new();
-
-/// One-time guard for the cleanup-handler registration.
-static OPENFGA_CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Test `OpenFGA` container wrapper.
 ///
@@ -618,16 +614,7 @@ async fn get_or_create_test_openfga_container(
     *container_guard = Some(test_container.clone());
     drop(container_guard);
 
-    register_openfga_cleanup_handler();
-
     Ok((test_container, base_url, port))
-}
-
-fn register_openfga_cleanup_handler() {
-    if OPENFGA_CLEANUP_REGISTERED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    info!("Registering OpenFGA test container cleanup handler");
 }
 
 /// Poll `GET {base_url}/healthz` until `OpenFGA` reports SERVING. Bounded at

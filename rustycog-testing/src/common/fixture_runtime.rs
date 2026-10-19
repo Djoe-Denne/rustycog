@@ -12,6 +12,9 @@ use std::{
 use testcontainers::{ContainerAsync, GenericImage};
 use tokio::task::JoinHandle;
 
+#[path = "fixture_runtime/process_exit.rs"]
+mod process_exit;
+
 type StartResult = Result<OwnedContainer, String>;
 type Task = Arc<Slot>;
 static CONTEXT: OnceLock<Result<Arc<Context>, String>> = OnceLock::new();
@@ -199,6 +202,43 @@ fn context() -> Result<Arc<Context>, String> {
 pub fn endpoint() -> Result<Endpoint, String> {
     Ok(context()?.endpoint.clone())
 }
+
+/// Start a service-local testcontainer with supervised creation and exit stop.
+///
+/// Pass the unpolled `image.start()` future and the exact name configured on
+/// that image. The guard is armed before creation. The ID comes from the
+/// returned handle, never a name/inventory lookup. Creation, readiness and
+/// explicit removal use the same ledger and ownership model as shared fixtures.
+/// The exit guard only stops, and never removes, remaining enrolled IDs.
+///
+/// On Windows `std::process::exit` bypasses CRT exit callbacks. Abort/forced
+/// termination also cannot run the guard. The campaign runner must therefore
+/// reconcile creation ledgers with Docker Engine and stop remaining owned IDs
+/// in its `finally` on success and failure; this guard does not replace that.
+///
+/// # Errors
+/// Returns an error for invalid runner/ledger configuration, collisions, an
+/// unavailable guard or a failed creation. Do not ignore errors.
+pub async fn start_service_testcontainer<F>(
+    create: F,
+    role: &str,
+    name: &str,
+    port: u16,
+) -> Result<OwnedContainer, String>
+where
+    F: Future<
+            Output = Result<
+                ContainerAsync<GenericImage>,
+                testcontainers::core::error::TestcontainersError,
+            >,
+        > + Send
+        + 'static,
+{
+    Attempt::prepare_named(role, port, Some(name))
+        .await?
+        .start(create)
+        .await
+}
 pub fn take_unshared<T>(singleton: &mut Option<Arc<T>>) -> Result<Option<T>, Arc<T>> {
     let Some(arc) = singleton.take() else {
         return Ok(None);
@@ -265,8 +305,13 @@ pub struct Attempt {
 }
 impl Attempt {
     pub async fn prepare(role: &str, port: u16) -> Result<Self, String> {
+        Self::prepare_named(role, port, None).await
+    }
+
+    async fn prepare_named(role: &str, port: u16, name: Option<&str>) -> Result<Self, String> {
         let context = context()?;
         context.endpoint.authority(port)?;
+        process_exit::arm()?;
         if role.is_empty()
             || role.len() > 24
             || !role.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
@@ -277,7 +322,19 @@ impl Attempt {
         if number >= 128 {
             return Err("fixture attempt limit reached".into());
         }
-        let name = format!("{role}-{}-{}-{number}", context.run, std::process::id());
+        let name = if let Some(name) = name {
+            if name.is_empty()
+                || name.len() > 128
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+            {
+                return Err("invalid service-local fixture name".into());
+            }
+            name.to_string()
+        } else {
+            format!("{role}-{}-{}-{number}", context.run, std::process::id())
+        };
         let docker = testcontainers::core::client::docker_client_instance()
             .await
             .map_err(|_| "Docker inventory client unavailable")?;
@@ -394,11 +451,13 @@ impl Attempt {
                         );
                         return Err("fixture returned no ID; cleanup INCONCLUSIVE".into());
                     }
+                    let exit_record = process_exit::track(&self, &id)?;
                     let owned = OwnedContainer {
                         container: Some(container),
                         attempt: self,
                         id,
                         removed_confirmed: false,
+                        exit_record,
                     };
                     owned.attempt.context.event(
                         owned.attempt.number,
@@ -628,11 +687,40 @@ pub async fn join_fixture_creations() -> Result<(), String> {
     }
 }
 
+// An exit stop is not a successful join of creations running on a test reactor.
+// Do not await those tasks from the guard's separate runtime or invent IDs.
+fn process_exit_creations_unresolved() -> bool {
+    let Some(tasks) = TASKS.get() else {
+        return false;
+    };
+    let Ok(tasks) = tasks.try_lock() else {
+        return true;
+    };
+    let mut unresolved = false;
+    for slot in tasks.iter() {
+        let pending = slot.active.load(Ordering::SeqCst)
+            || slot.task.try_lock().map_or(true, |task| task.is_some())
+            || slot.teardown.try_lock().map_or(true, |task| task.is_some());
+        if pending {
+            slot.context.unknown(
+                slot.number,
+                &slot.role,
+                &slot.name,
+                "process_exit_creation_unresolved",
+                slot.port,
+            );
+        }
+        unresolved |= pending || slot.context.unknown.load(Ordering::SeqCst);
+    }
+    unresolved
+}
+
 pub struct OwnedContainer {
     container: Option<ContainerAsync<GenericImage>>,
     attempt: Attempt,
     id: String,
     removed_confirmed: bool,
+    exit_record: Arc<process_exit::Record>,
 }
 impl OwnedContainer {
     pub async fn mapped_port(
@@ -715,6 +803,7 @@ impl OwnedContainer {
             self.attempt.context.unknown.store(true, Ordering::SeqCst);
         } else {
             self.removed_confirmed = true;
+            self.exit_record.removed();
         }
         self.attempt.context.event(
             self.attempt.number,

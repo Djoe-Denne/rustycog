@@ -5,7 +5,6 @@
 
 use rdkafka::consumer::Consumer;
 use rustycog::config::{load_config_part, KafkaConfig};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -17,9 +16,6 @@ use uuid;
 /// Global test Kafka container instance
 static TEST_KAFKA_CONTAINER: OnceLock<Arc<Mutex<Option<Arc<TestKafkaContainer>>>>> =
     OnceLock::new();
-
-/// Flag to track if cleanup handler has been registered
-static KAFKA_CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 fn kafka_broker_addresses(
     brokers: &str,
@@ -252,16 +248,7 @@ async fn get_or_create_test_kafka_container(
         port: kafka_port,
     });
     *container_guard = Some(test_container.clone());
-    register_kafka_cleanup_handler();
     Ok(test_container)
-}
-
-/// Register cleanup handler for Kafka containers
-fn register_kafka_cleanup_handler() {
-    if KAFKA_CLEANUP_REGISTERED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    info!("Registering Kafka test container cleanup handler");
 }
 
 /// Test fixture for Kafka integration tests

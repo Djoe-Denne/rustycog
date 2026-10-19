@@ -611,4 +611,50 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn unresolved_pending_creation_reports_inconclusive_composition() {
+        // Composition guard×join (G-10, review T-2): a slot stuck in the
+        // creation phase (active lease, nothing joined) at exit time must
+        // report INCONCLUSIVE through process_exit_creations_unresolved —
+        // never a clean stop. Synthetic IDs/ledger only; no Docker evidence.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger");
+        let context = Arc::new(Context {
+            run: "exit-unit-unresolved".into(),
+            endpoint: Endpoint {
+                host: "127.0.0.1".into(),
+            },
+            ledger: Mutex::new(
+                std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&path)
+                    .unwrap(),
+            ),
+            ids: Mutex::new(HashMap::new()),
+            unknown: AtomicBool::new(false),
+        });
+        let slot = Arc::new(super::super::Slot {
+            active: AtomicBool::new(true),
+            task: tokio::sync::Mutex::new(None),
+            teardown: tokio::sync::Mutex::new(None),
+            context: context.clone(),
+            number: 0,
+            role: "postgres".into(),
+            name: "unresolved-pending-creation".into(),
+            port: 1234,
+        });
+        super::super::TASKS
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .unwrap()
+            .push(slot);
+        assert!(super::super::process_exit_creations_unresolved());
+        assert!(context.unknown.load(std::sync::atomic::Ordering::SeqCst));
+        let ledger = events(&path);
+        assert!(ledger
+            .iter()
+            .any(|e| e["event"] == "process_exit_creation_unresolved"));
+    }
 }

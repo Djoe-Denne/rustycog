@@ -471,12 +471,22 @@ struct ConsumerLifecycle {
     pending_stop: bool,
 }
 
-/// Held by the parent AND each child until their futures have been destroyed.
-/// In particular, a dropped parent cannot admit a second start while aborted
-/// children still own resources and are waiting to be polled for cancellation.
+/// Released only after the encompassing run resources have been destroyed.
 struct ConsumerRun {
     lifecycle: Arc<Mutex<ConsumerLifecycle>>,
     stop: watch::Sender<bool>,
+}
+
+/// The parent and every child share this SINGLE resource owner, including
+/// before an async child is first polled. Rust drops struct fields in declaration
+/// order: the handler, client and queue storage are destroyed before the LAST
+/// field releases the lifecycle lease and allows another start. Keeping a
+/// sibling `Arc<Handler>` or a separate poller-local lease would break that order.
+struct RunResources<H> {
+    handler: H,
+    client: Client,
+    queue_urls: Vec<String>,
+    lease: Arc<ConsumerRun>,
 }
 
 impl Drop for ConsumerRun {
@@ -774,25 +784,30 @@ impl EventConsumer for SqsEventConsumer {
             queue_count = queue_urls.len(),
             "Starting SQS event consumer"
         );
-        let run = ConsumerLifecycle::begin(&self.lifecycle)?;
-        let handler = Arc::new(handler);
+        let resources = Arc::new(RunResources {
+            handler,
+            client: self.client.clone(),
+            queue_urls,
+            lease: ConsumerLifecycle::begin(&self.lifecycle)?,
+        });
         let mut tasks = JoinSet::new();
 
-        for queue_url in queue_urls {
-            let client = self.client.clone();
-            let handler = handler.clone();
-            let run = run.clone();
-
+        for queue_index in 0..resources.queue_urls.len() {
+            let resources = resources.clone();
             tasks.spawn(async move {
-                let _owner = run;
-                poll_until_stopped(_owner.stop.subscribe(), &queue_url, || {
-                    Self::poll_queue_and_handle_messages(&client, &queue_url, handler.as_ref())
+                let queue_url = &resources.queue_urls[queue_index];
+                poll_until_stopped(resources.lease.stop.subscribe(), queue_url, || {
+                    Self::poll_queue_and_handle_messages(
+                        &resources.client,
+                        queue_url,
+                        &resources.handler,
+                    )
                 })
                 .await
             });
         }
 
-        join_pollers(&mut tasks, &run.stop).await?;
+        join_pollers(&mut tasks, &resources.lease.stop).await?;
 
         info!("SQS event consumer stopped");
         Ok(())

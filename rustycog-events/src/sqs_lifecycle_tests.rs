@@ -4,6 +4,184 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{timeout_at, Instant};
 
+struct LeaseOrderHandler {
+    lifecycle: Arc<Mutex<ConsumerLifecycle>>,
+    destroyed: Option<oneshot::Sender<bool>>,
+    panic_on_message: bool,
+}
+
+impl Drop for LeaseOrderHandler {
+    fn drop(&mut self) {
+        let active = self
+            .lifecycle
+            .lock()
+            .expect("lifecycle observer")
+            .active
+            .is_some();
+        if let Some(destroyed) = self.destroyed.take() {
+            let _ = destroyed.send(active);
+        }
+    }
+}
+
+#[async_trait]
+impl EventHandler for LeaseOrderHandler {
+    async fn handle_event(&self, _event: Box<dyn DomainEvent>) -> Result<(), ServiceError> {
+        assert!(!self.panic_on_message, "forced public poller panic");
+        pending().await
+    }
+
+    fn supports_event_type(&self, _event_type: &str) -> bool {
+        true
+    }
+}
+
+fn lease_order_handler(
+    consumer: &SqsEventConsumer,
+    panic_on_message: bool,
+) -> (LeaseOrderHandler, oneshot::Receiver<bool>) {
+    let (destroyed, receiver) = oneshot::channel();
+    (
+        LeaseOrderHandler {
+            lifecycle: consumer.lifecycle.clone(),
+            destroyed: Some(destroyed),
+            panic_on_message,
+        },
+        receiver,
+    )
+}
+
+async fn assert_lease_outlives_handler(
+    consumer: &SqsEventConsumer,
+    deadline: Instant,
+    destroyed: oneshot::Receiver<bool>,
+) {
+    let active_during_handler_drop = timeout_at(deadline, destroyed)
+        .await
+        .expect("handler destruction deadline")
+        .expect("handler witness");
+    assert!(
+        active_during_handler_drop,
+        "lease must remain active throughout H::drop, not only until poller-local destruction"
+    );
+    let _next = ConsumerLifecycle::begin(&consumer.lifecycle)
+        .expect("restart admitted after complete resource destruction");
+}
+
+#[tokio::test]
+async fn rp1_lease_outlives_handler_when_children_never_polled() {
+    let mut consumer = consumer();
+    consumer.config.enabled = true;
+    consumer.config.default_queues = vec!["first".into(), "second".into()];
+    let (handler, destroyed) = lease_order_handler(&consumer, false);
+    let mut parent = Box::pin(consumer.start(handler));
+    assert!(futures::poll!(parent.as_mut()).is_pending());
+    let deadline = Instant::now() + Duration::from_secs(1);
+    drop(parent);
+    assert_lease_outlives_handler(&consumer, deadline, destroyed).await;
+}
+
+// A loopback listener only witnesses actual ReceiveMessage awaits. It never
+// connects to Docker/SQS and never impersonates any shared test fixture.
+async fn active_public_consumer(
+    panic_on_message: bool,
+) -> (
+    Arc<SqsEventConsumer>,
+    tokio::task::JoinHandle<Result<(), ServiceError>>,
+    oneshot::Receiver<bool>,
+    Vec<tokio::net::TcpStream>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("loopback poll witness");
+    let port = listener.local_addr().expect("loopback address").port();
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let mut consumer = consumer();
+    consumer.client = Client::from_conf(
+        Config::builder()
+            .behavior_version(BehaviorVersion::latest())
+            .region(Region::new("us-east-1"))
+            .credentials_provider(Credentials::new("test", "test", None, None, "rp1"))
+            .endpoint_url(endpoint)
+            .build(),
+    );
+    consumer.config.enabled = true;
+    consumer.config.host = "127.0.0.1".into();
+    consumer.config.port = port;
+    consumer.config.default_queues = vec!["first".into(), "second".into()];
+    let consumer = Arc::new(consumer);
+    let (handler, destroyed) = lease_order_handler(&consumer, panic_on_message);
+    let parent_consumer = consumer.clone();
+    let parent = tokio::spawn(async move { parent_consumer.start(handler).await });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut polls = Vec::new();
+    for _ in 0..2 {
+        let (stream, _) = timeout_at(deadline, listener.accept())
+            .await
+            .expect("both real poll futures entered")
+            .expect("poll connection");
+        polls.push(stream);
+    }
+    (consumer, parent, destroyed, polls)
+}
+
+#[tokio::test]
+async fn rp1_lease_outlives_handler_when_active_parent_is_aborted() {
+    let (consumer, parent, destroyed, _polls) = active_public_consumer(false).await;
+    let deadline = Instant::now() + Duration::from_secs(1);
+    parent.abort();
+    assert!(timeout_at(deadline, parent)
+        .await
+        .expect("parent joined")
+        .expect_err("aborted")
+        .is_cancelled());
+    assert_lease_outlives_handler(&consumer, deadline, destroyed).await;
+}
+
+#[tokio::test]
+async fn rp1_lease_outlives_handler_during_normal_public_stop() {
+    let (consumer, parent, destroyed, _polls) = active_public_consumer(false).await;
+    let deadline = Instant::now() + Duration::from_secs(1);
+    consumer.stop().await.expect("stop active polls");
+    timeout_at(deadline, parent)
+        .await
+        .expect("parent joined")
+        .expect("parent task")
+        .expect("normal stop");
+    assert_lease_outlives_handler(&consumer, deadline, destroyed).await;
+}
+
+#[tokio::test]
+async fn rp1_lease_outlives_handler_during_public_child_panic() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (consumer, parent, destroyed, mut polls) = active_public_consumer(true).await;
+    let mut stream = polls.pop().expect("first pending poll");
+    let mut request = [0; 4096];
+    tokio::time::timeout(Duration::from_secs(1), stream.read(&mut request))
+        .await
+        .expect("receive request")
+        .expect("request bytes");
+    let body = json!({"Messages": [{"Body": json!({
+        "event_id": uuid::Uuid::new_v4().to_string(), "event_type": "panic-test",
+        "aggregate_id": uuid::Uuid::new_v4().to_string(),
+        "occurred_at": chrono::Utc::now().to_rfc3339(), "version": 1, "data": {}, "metadata": {}
+    }).to_string(), "ReceiptHandle": "must-not-delete"}]})
+    .to_string();
+    let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/x-amz-json-1.0\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    stream
+        .write_all(response.as_bytes())
+        .await
+        .expect("one message response");
+    let error = timeout_at(deadline, parent)
+        .await
+        .expect("panic cleanup deadline")
+        .expect("parent task")
+        .expect_err("child panic propagated");
+    assert!(error.to_string().contains("panicked"));
+    assert_lease_outlives_handler(&consumer, deadline, destroyed).await;
+}
+
 struct HandlerDropWitness(Option<oneshot::Sender<()>>);
 
 impl Drop for HandlerDropWitness {

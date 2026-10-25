@@ -8,13 +8,19 @@ use aws_credential_types::Credentials;
 use aws_sdk_sqs::{types::Message, Client, Config};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::future::Future;
+use std::sync::{Arc, Mutex};
+use tokio::sync::watch;
+use tokio::task::JoinSet;
 use tokio::time::{sleep, Duration};
 use tracing::{debug, error, info, warn};
 
 type SqsBatchEntry = aws_sdk_sqs::types::SendMessageBatchRequestEntry;
 type SqsBatchEntriesByQueue = HashMap<String, Vec<SqsBatchEntry>>;
+
+#[cfg(test)]
+#[path = "sqs_lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 /// SQS event publisher implementation
 pub struct SqsEventPublisher {
@@ -456,7 +462,105 @@ impl EventPublisher<ServiceError> for SqsEventPublisher {
 pub struct SqsEventConsumer {
     client: Client,
     config: SqsConfig,
-    should_stop: Arc<std::sync::atomic::AtomicBool>,
+    lifecycle: Arc<Mutex<ConsumerLifecycle>>,
+}
+
+#[derive(Default)]
+struct ConsumerLifecycle {
+    active: Option<watch::Sender<bool>>,
+    pending_stop: bool,
+}
+
+/// Held by the parent AND each child until their futures have been destroyed.
+/// In particular, a dropped parent cannot admit a second start while aborted
+/// children still own resources and are waiting to be polled for cancellation.
+struct ConsumerRun {
+    lifecycle: Arc<Mutex<ConsumerLifecycle>>,
+    stop: watch::Sender<bool>,
+}
+
+impl Drop for ConsumerRun {
+    fn drop(&mut self) {
+        let mut state = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        state.active = None;
+    }
+}
+
+impl ConsumerLifecycle {
+    fn begin(lifecycle: &Arc<Mutex<Self>>) -> Result<Arc<ConsumerRun>, ServiceError> {
+        let mut state = lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        if state.active.is_some() {
+            return Err(ServiceError::infrastructure("SQS consumer already running"));
+        }
+        // Serialize begin/stop: an early stop is consumed by this run, never
+        // overwritten by a reset racing with stop at startup.
+        let (stop, _) = watch::channel(std::mem::take(&mut state.pending_stop));
+        state.active = Some(stop.clone());
+        Ok(Arc::new(ConsumerRun {
+            lifecycle: lifecycle.clone(),
+            stop,
+        }))
+    }
+}
+
+/// Cancellation wraps the entire poll, including handler and delete awaits.
+/// Dropping an unfinished handler therefore cannot reach message deletion.
+async fn poll_until_stopped<F, Fut>(
+    mut stopped: watch::Receiver<bool>,
+    queue_url: &str,
+    mut poll: F,
+) -> Result<(), ServiceError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<(), ServiceError>>,
+{
+    loop {
+        let result = tokio::select! {
+            biased;
+            _ = stopped.wait_for(|stop| *stop) => return Ok(()),
+            result = poll() => result,
+        };
+        if let Err(error) = result {
+            error!(%error, %queue_url, "Error polling SQS messages");
+            tokio::select! {
+                biased;
+                _ = stopped.wait_for(|stop| *stop) => return Ok(()),
+                () = sleep(Duration::from_millis(500)) => {}
+            }
+        }
+    }
+}
+
+async fn join_pollers(
+    tasks: &mut JoinSet<Result<(), ServiceError>>,
+    stop: &watch::Sender<bool>,
+) -> Result<(), ServiceError> {
+    while let Some(result) = tasks.join_next().await {
+        let error = match result {
+            Ok(Ok(())) => continue,
+            Ok(Err(error)) => {
+                ServiceError::infrastructure(format!("SQS consumer task failed: {error}"))
+            }
+            Err(error) => ServiceError::infrastructure(format!(
+                "SQS consumer task panicked or was cancelled: {error}"
+            )),
+        };
+        stop.send_replace(true);
+        tasks.abort_all();
+        // Observe every result, retaining the first failure rather than losing
+        // siblings on an early return or waiting in spawn order.
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(Err(cleanup_error)) => warn!(%cleanup_error, "SQS poller cleanup failed"),
+                Err(cleanup_error) if !cleanup_error.is_cancelled() => {
+                    warn!(%cleanup_error, "SQS poller cleanup panicked");
+                }
+                _ => {}
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 impl SqsEventConsumer {
@@ -471,7 +575,7 @@ impl SqsEventConsumer {
         Ok(Self {
             client,
             config,
-            should_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            lifecycle: Arc::default(),
         })
     }
 
@@ -670,41 +774,25 @@ impl EventConsumer for SqsEventConsumer {
             queue_count = queue_urls.len(),
             "Starting SQS event consumer"
         );
-        self.should_stop.store(false, Ordering::SeqCst);
-
+        let run = ConsumerLifecycle::begin(&self.lifecycle)?;
         let handler = Arc::new(handler);
-        let mut tasks = Vec::new();
+        let mut tasks = JoinSet::new();
 
         for queue_url in queue_urls {
             let client = self.client.clone();
             let handler = handler.clone();
-            let should_stop = self.should_stop.clone();
+            let run = run.clone();
 
-            tasks.push(tokio::spawn(async move {
-                while !should_stop.load(Ordering::SeqCst) {
-                    if let Err(e) =
-                        Self::poll_queue_and_handle_messages(&client, &queue_url, handler.as_ref())
-                            .await
-                    {
-                        error!(
-                            error = %e,
-                            queue_url = %queue_url,
-                            "Error polling SQS messages"
-                        );
-                        // Sleep for a bit before retrying to avoid a tight loop on errors.
-                        sleep(Duration::from_millis(500)).await;
-                    }
-                }
-
-                Ok::<(), ServiceError>(())
-            }));
+            tasks.spawn(async move {
+                let _owner = run;
+                poll_until_stopped(_owner.stop.subscribe(), &queue_url, || {
+                    Self::poll_queue_and_handle_messages(&client, &queue_url, handler.as_ref())
+                })
+                .await
+            });
         }
 
-        for task in tasks {
-            task.await.map_err(|e| {
-                ServiceError::infrastructure(format!("SQS consumer task panicked: {e}"))
-            })??;
-        }
+        join_pollers(&mut tasks, &run.stop).await?;
 
         info!("SQS event consumer stopped");
         Ok(())
@@ -712,7 +800,12 @@ impl EventConsumer for SqsEventConsumer {
 
     async fn stop(&self) -> Result<(), ServiceError> {
         info!("Stopping SQS event consumer");
-        self.should_stop.store(true, Ordering::SeqCst);
+        let mut state = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(stop) = &state.active {
+            stop.send_replace(true);
+        } else {
+            state.pending_stop = true;
+        }
         Ok(())
     }
 
@@ -813,7 +906,6 @@ mod tests {
     use super::*;
     use chrono::{DateTime, Utc};
     use std::collections::HashMap;
-    use std::sync::atomic::AtomicBool;
     use uuid::Uuid;
 
     #[derive(Debug)]
@@ -937,7 +1029,7 @@ mod tests {
         let consumer = SqsEventConsumer {
             client: test_client(),
             config,
-            should_stop: Arc::new(AtomicBool::new(false)),
+            lifecycle: Arc::default(),
         };
 
         let queue_urls = consumer.configured_queue_urls();

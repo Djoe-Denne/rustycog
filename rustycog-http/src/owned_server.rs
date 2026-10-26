@@ -828,6 +828,149 @@ mod tests {
         );
     }
 
+    // T-1 / HTTP RP-1: deadline failure remains observable while later joins
+    // still collect the cancelled tasks. Current-thread prevents an abort from
+    // being observed before the first expired-budget join reports its outcome.
+    #[tokio::test(flavor = "current_thread")]
+    async fn owned_t1_expired_deadline_stays_error_after_reaping_cancelled_request() {
+        let (entered, release, dropped) = (
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+        );
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let mutations = Arc::new(AtomicUsize::new(0));
+        let mut server = start(blocked_route(
+            entered.clone(),
+            release.clone(),
+            destroyed.clone(),
+            dropped.clone(),
+            mutations.clone(),
+        ))
+        .await;
+        let socket = request(&server).await;
+        timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .unwrap();
+        let past = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        server.request_shutdown(HttpShutdownBudget::new(past, past).unwrap());
+        let first = server.join().await;
+        let at_first = destroyed.load(Ordering::SeqCst);
+        tokio::task::yield_now().await;
+        let second = server.join().await;
+        let third = server.join().await;
+        let at_rejoin = destroyed.load(Ordering::SeqCst);
+
+        // Collect observations, then clean up even if the sticky-error oracle
+        // will fail. Do not weaken that oracle to match a later successful join.
+        release.notify_one();
+        let cleanup = if destroyed.load(Ordering::SeqCst) == 0 {
+            timeout(Duration::from_secs(1), dropped.notified())
+                .await
+                .is_ok()
+        } else {
+            true
+        };
+        drop(socket);
+        drop(server);
+        eprintln!("HTTP_T1 first={first:?} second={second:?} third={third:?} at_first={at_first} at_rejoin={at_rejoin} cleanup={cleanup} mutations={}", mutations.load(Ordering::SeqCst));
+        assert!(
+            cleanup,
+            "request must be cleaned before asserting deadline semantics"
+        );
+        assert!(
+            first
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("unobserved")),
+            "first join must actually witness deadline/non-observation: {first:?}"
+        );
+        assert_eq!(
+            at_rejoin, 1,
+            "sticky failure must not prevent harvesting request destructor"
+        );
+        assert_eq!(mutations.load(Ordering::SeqCst), 0);
+        assert!(second.is_err() && third.is_err(), "T-1: an observed deadline failure must remain an error after complete reaping; second={second:?}, third={third:?}");
+    }
+
+    // T-2 / HTTP RP-2: cancelling the borrowed observer must not cancel the
+    // already requested force progression while the owner itself stays alive.
+    #[tokio::test(flavor = "current_thread")]
+    async fn owned_t2_force_progresses_without_repolling_cancelled_join() {
+        let (entered, release, dropped) = (
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+        );
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let mutations = Arc::new(AtomicUsize::new(0));
+        let mut server = start(blocked_route(
+            entered.clone(),
+            release.clone(),
+            destroyed.clone(),
+            dropped.clone(),
+            mutations.clone(),
+        ))
+        .await;
+        let socket = request(&server).await;
+        timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .unwrap();
+        let started = Instant::now();
+        let grace = started + Duration::from_millis(30);
+        let deadline = started + Duration::from_millis(60);
+        server.request_shutdown(HttpShutdownBudget::new(grace, deadline).unwrap());
+        let cancelled =
+            tokio::time::timeout_at(started + Duration::from_millis(10), server.join()).await;
+        // No join future exists during this observation. Tokio remains active;
+        // the Notify is emitted only by actual destruction, not a timer/count.
+        let independent =
+            tokio::time::timeout_at(deadline + Duration::from_millis(30), dropped.notified()).await;
+        let before_release = destroyed.load(Ordering::SeqCst);
+        let before_mutation = mutations.load(Ordering::SeqCst);
+        release.notify_one();
+        let cleanup = if destroyed.load(Ordering::SeqCst) == 0 {
+            timeout(Duration::from_secs(1), dropped.notified())
+                .await
+                .is_ok()
+        } else {
+            true
+        };
+        let resumed = timeout(Duration::from_secs(1), server.join()).await;
+        let after_mutation = mutations.load(Ordering::SeqCst);
+        drop(socket);
+        drop(server);
+        eprintln!("HTTP_T2 cancelled={cancelled:?} independent={independent:?} before_release={before_release} mutations_before={before_mutation} mutations_after={after_mutation} resumed={resumed:?} cleanup={cleanup} elapsed_ms={}", started.elapsed().as_millis());
+        assert!(
+            cleanup,
+            "release and destruction cleanup must finish before the red oracle"
+        );
+        assert!(
+            cancelled.is_err(),
+            "only the borrowed join must actually be cancelled"
+        );
+        assert!(
+            resumed.is_ok(),
+            "resumed observer must finish within cleanup bound"
+        );
+        assert_eq!(
+            before_release, 1,
+            "T-2: requested force must destroy the request independently of repolling join"
+        );
+        assert!(
+            independent.is_ok(),
+            "request destructor must be observed before release"
+        );
+        assert_eq!(
+            after_mutation - before_mutation,
+            0,
+            "cancelled join cannot permit late request mutation"
+        );
+        assert!(
+            matches!(resumed, Ok(Ok(report)) if report.forced) || matches!(resumed, Ok(Err(_))),
+            "resumed join must retain force or deadline diagnostics"
+        );
+    }
+
     // G-3: a real H2 stream must be owned through Hyper's indirect executor.
     #[tokio::test]
     async fn owned_http2_admitted_stream_is_destroyed_before_forced_join() {

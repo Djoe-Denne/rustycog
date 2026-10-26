@@ -395,3 +395,512 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{start_router_owned, HttpShutdownBudget, OwnedHttpServer};
+    use axum::{
+        body::Body,
+        extract::Request,
+        routing::{get, post},
+        Router,
+    };
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+    use tokio::{
+        io::AsyncWriteExt,
+        net::TcpStream,
+        sync::Notify,
+        time::{timeout, Instant},
+    };
+
+    struct Witness {
+        destroyed: Arc<AtomicUsize>,
+        dropped: Arc<Notify>,
+    }
+
+    impl Drop for Witness {
+        fn drop(&mut self) {
+            self.destroyed.fetch_add(1, Ordering::SeqCst);
+            self.dropped.notify_one();
+        }
+    }
+
+    async fn start(router: Router) -> OwnedHttpServer {
+        start_router_owned(
+            router,
+            crate::rustycog_config::ServerConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+                tls_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("loopback startup")
+    }
+
+    fn budget() -> HttpShutdownBudget {
+        let now = Instant::now();
+        HttpShutdownBudget::new(
+            now + Duration::from_millis(50),
+            now + Duration::from_secs(1),
+        )
+        .unwrap()
+    }
+
+    fn blocked_route(
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+        destroyed: Arc<AtomicUsize>,
+        dropped: Arc<Notify>,
+        mutations: Arc<AtomicUsize>,
+    ) -> Router {
+        Router::new().route(
+            "/owned",
+            get(move || {
+                let (entered, release, destroyed, dropped, mutations) = (
+                    entered.clone(),
+                    release.clone(),
+                    destroyed.clone(),
+                    dropped.clone(),
+                    mutations.clone(),
+                );
+                async move {
+                    let _witness = Witness { destroyed, dropped };
+                    entered.notify_one();
+                    release.notified().await;
+                    mutations.fetch_add(1, Ordering::SeqCst);
+                    "finished"
+                }
+            }),
+        )
+    }
+
+    async fn request(server: &OwnedHttpServer) -> TcpStream {
+        let mut socket = TcpStream::connect(server.local_addrs()[0]).await.unwrap();
+        socket
+            .write_all(b"GET /owned HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        socket
+    }
+
+    // G-1/G-4: cancellation of a borrowed join must not lose the pending work.
+    #[tokio::test]
+    async fn owned_force_resumes_cancelled_join_and_preserves_terminal_report() {
+        let (entered, release, dropped) = (
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+        );
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let mutations = Arc::new(AtomicUsize::new(0));
+        let mut server = start(blocked_route(
+            entered.clone(),
+            release.clone(),
+            destroyed.clone(),
+            dropped,
+            mutations.clone(),
+        ))
+        .await;
+        let socket = request(&server).await;
+        timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .unwrap();
+        server.request_shutdown(budget());
+        let cancelled = timeout(Duration::from_millis(5), server.join()).await;
+        let joined = server.join().await;
+        let at_return = destroyed.load(Ordering::SeqCst);
+        release.notify_one();
+        drop(socket);
+        let again = server.join().await;
+        assert!(
+            cancelled.is_err(),
+            "pending borrowed join was actually cancelled"
+        );
+        assert!(joined.unwrap().forced);
+        assert!(
+            again.unwrap().forced,
+            "terminal result must survive repeated join"
+        );
+        assert_eq!(
+            at_return, 1,
+            "request destructor must run before complete join"
+        );
+        assert_eq!(
+            mutations.load(Ordering::SeqCst),
+            0,
+            "released request cannot mutate after join"
+        );
+    }
+
+    // G-1: work admitted before stop is allowed to finish during grace.
+    #[tokio::test]
+    async fn owned_graceful_request_finishes_without_force() {
+        let (entered, release, dropped) = (
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+        );
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let mutations = Arc::new(AtomicUsize::new(0));
+        let mut server = start(blocked_route(
+            entered.clone(),
+            release.clone(),
+            destroyed.clone(),
+            dropped,
+            mutations.clone(),
+        ))
+        .await;
+        let socket = request(&server).await;
+        timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .unwrap();
+        let now = Instant::now();
+        server.request_shutdown(
+            HttpShutdownBudget::new(now + Duration::from_secs(1), now + Duration::from_secs(2))
+                .unwrap(),
+        );
+        release.notify_one();
+        let report = server.join().await;
+        drop(socket);
+        assert!(!report.unwrap().forced);
+        assert_eq!(destroyed.load(Ordering::SeqCst), 1);
+        assert_eq!(mutations.load(Ordering::SeqCst), 1);
+    }
+
+    // G-2: an admitted incoming body must not survive the complete join.
+    #[tokio::test]
+    async fn owned_force_destroys_handler_waiting_for_incomplete_request_body() {
+        let entered = Arc::new(Notify::new());
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(Notify::new());
+        let router = Router::new().route(
+            "/body",
+            post({
+                let (entered, destroyed, dropped) =
+                    (entered.clone(), destroyed.clone(), dropped.clone());
+                move |request: Request| {
+                    let (entered, destroyed, dropped) =
+                        (entered.clone(), destroyed.clone(), dropped.clone());
+                    async move {
+                        let _witness = Witness { destroyed, dropped };
+                        entered.notify_one();
+                        axum::body::to_bytes(request.into_body(), 100)
+                            .await
+                            .unwrap();
+                        "body completed"
+                    }
+                }
+            }),
+        );
+        let mut server = start(router).await;
+        let mut socket = TcpStream::connect(server.local_addrs()[0]).await.unwrap();
+        socket
+            .write_all(b"POST /body HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10\r\n\r\nx")
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .unwrap();
+        server.request_shutdown(budget());
+        let report = server.join().await;
+        let at_return = destroyed.load(Ordering::SeqCst);
+        drop(socket);
+        assert!(report.unwrap().forced);
+        assert_eq!(
+            at_return, 1,
+            "body future was destroyed before join returned"
+        );
+    }
+
+    // G-2: headers alone do not prove ownership of the response body stream.
+    #[tokio::test]
+    async fn owned_force_destroys_response_stream_after_headers() {
+        let polled = Arc::new(Notify::new());
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(Notify::new());
+        let router = Router::new().route(
+            "/stream",
+            get({
+                let (polled, destroyed, dropped) =
+                    (polled.clone(), destroyed.clone(), dropped.clone());
+                move || {
+                    let witness = Witness {
+                        destroyed: destroyed.clone(),
+                        dropped: dropped.clone(),
+                    };
+                    let polled = polled.clone();
+                    async move {
+                        Body::from_stream(futures::stream::unfold(
+                            (false, witness),
+                            move |(sent, witness)| {
+                                let polled = polled.clone();
+                                async move {
+                                    if sent {
+                                        polled.notify_one();
+                                        std::future::pending::<()>().await;
+                                    }
+                                    Some((
+                                        Ok::<_, std::io::Error>(axum::body::Bytes::from_static(
+                                            b"first",
+                                        )),
+                                        (true, witness),
+                                    ))
+                                }
+                            },
+                        ))
+                    }
+                }
+            }),
+        );
+        let mut server = start(router).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let response = client
+            .get(format!("http://{}/stream", server.local_addrs()[0]))
+            .send()
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(1), polled.notified())
+            .await
+            .unwrap();
+        server.request_shutdown(budget());
+        let report = server.join().await;
+        let at_return = destroyed.load(Ordering::SeqCst);
+        drop(response);
+        drop(client);
+        assert!(report.unwrap().forced);
+        assert_eq!(
+            at_return, 1,
+            "response body owner must not outlive complete join"
+        );
+    }
+
+    // G-4: coordinator errors/panics cannot erase independent descendant ownership.
+    #[tokio::test]
+    async fn owned_failed_coordinator_retains_active_request_and_primary_diagnostic() {
+        for panic in [false, true] {
+            let (entered, release, dropped) = (
+                Arc::new(Notify::new()),
+                Arc::new(Notify::new()),
+                Arc::new(Notify::new()),
+            );
+            let destroyed = Arc::new(AtomicUsize::new(0));
+            let mutations = Arc::new(AtomicUsize::new(0));
+            let mut server = start(blocked_route(
+                entered.clone(),
+                release.clone(),
+                destroyed.clone(),
+                dropped,
+                mutations.clone(),
+            ))
+            .await;
+            let socket = request(&server).await;
+            timeout(Duration::from_secs(1), entered.notified())
+                .await
+                .unwrap();
+            // Private existing owner fields allow a controlled coordinator fault,
+            // while its real admitted HTTP descendant remains untouched.
+            let original = server.coordinator.take().unwrap();
+            original.abort();
+            let _ = original.await;
+            server.coordinator = Some(tokio::spawn(async move {
+                assert!(!panic, "coordinator panic witness");
+                anyhow::bail!("coordinator error witness")
+            }));
+            let observed = server.wait_for_server_exit().await;
+            server.request_shutdown(budget());
+            let joined = server.join().await;
+            let at_return = destroyed.load(Ordering::SeqCst);
+            release.notify_one();
+            drop(socket);
+            assert!(format!("{:#}", observed.unwrap_err()).contains(if panic {
+                "panic witness"
+            } else {
+                "error witness"
+            }));
+            assert!(format!("{:#}", joined.unwrap_err()).contains(if panic {
+                "panic witness"
+            } else {
+                "error witness"
+            }));
+            assert_eq!(at_return, 1);
+            assert_eq!(mutations.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    // G-4: Drop requests cancellation; an external witness, not Drop's return,
+    // establishes that the active runtime actually destroyed the request.
+    #[tokio::test]
+    async fn owned_parent_cancellation_destroys_request_under_active_runtime() {
+        let (entered, release, dropped) = (
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+        );
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let mutations = Arc::new(AtomicUsize::new(0));
+        let server = start(blocked_route(
+            entered.clone(),
+            release.clone(),
+            destroyed.clone(),
+            dropped.clone(),
+            mutations.clone(),
+        ))
+        .await;
+        let socket = request(&server).await;
+        timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .unwrap();
+        let parent = tokio::spawn(async move {
+            let _owner = server;
+            std::future::pending::<()>().await;
+        });
+        parent.abort();
+        let parent_result = parent.await;
+        let observed = timeout(Duration::from_secs(1), dropped.notified()).await;
+        release.notify_one();
+        drop(socket);
+        assert!(parent_result.unwrap_err().is_cancelled());
+        assert!(
+            observed.is_ok(),
+            "runtime must observe destruction after Drop cancellation"
+        );
+        assert_eq!(destroyed.load(Ordering::SeqCst), 1);
+        assert_eq!(mutations.load(Ordering::SeqCst), 0);
+    }
+
+    // G-2/G-3: real peer metadata and keep-alive admission fence after stop.
+    #[tokio::test]
+    async fn owned_keepalive_stop_fences_new_requests_and_preserves_connect_info() {
+        use tokio::io::AsyncReadExt;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let router = Router::new().route(
+            "/peer",
+            get({
+                let calls = calls.clone();
+                move |axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<
+                    std::net::SocketAddr,
+                >| {
+                    let calls = calls.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        peer.to_string()
+                    }
+                }
+            }),
+        );
+        let mut server = start(router).await;
+        let mut socket = TcpStream::connect(server.local_addrs()[0]).await.unwrap();
+        let peer = socket.local_addr().unwrap().to_string();
+        socket
+            .write_all(b"GET /peer HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let first = timeout(Duration::from_secs(1), async {
+            let mut result = Vec::new();
+            while !String::from_utf8_lossy(&result).ends_with(&peer) {
+                let mut buffer = [0; 1024];
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert_ne!(count, 0, "first response must carry the peer address");
+                result.extend_from_slice(&buffer[..count]);
+            }
+            result
+        })
+        .await
+        .unwrap();
+        server.request_shutdown(budget());
+        let _ = socket
+            .write_all(b"GET /peer HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await;
+        let report = server.join().await;
+        drop(socket);
+        assert!(String::from_utf8_lossy(&first).starts_with("HTTP/1.1 200"));
+        assert!(!report.unwrap().forced);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "keep-alive request after stop must not enter handler"
+        );
+    }
+
+    // G-3: a real H2 stream must be owned through Hyper's indirect executor.
+    #[tokio::test]
+    async fn owned_http2_admitted_stream_is_destroyed_before_forced_join() {
+        let (entered, release, dropped) = (
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+        );
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let mutations = Arc::new(AtomicUsize::new(0));
+        let router = blocked_route(
+            entered.clone(),
+            release.clone(),
+            destroyed.clone(),
+            dropped,
+            mutations.clone(),
+        )
+        .route("/probe", get(|| async { "h2" }));
+        let mut server = start(router).await;
+        let socket = TcpStream::connect(server.local_addrs()[0]).await.unwrap();
+        let (mut sender, connection) = hyper::client::conn::http2::handshake(
+            hyper_util::rt::TokioExecutor::new(),
+            hyper_util::rt::TokioIo::new(socket),
+        )
+        .await
+        .unwrap();
+        let client_driver = tokio::spawn(connection);
+        let probe = sender
+            .send_request(
+                hyper::Request::builder()
+                    .uri("http://localhost/probe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let version = probe.version();
+        drop(probe);
+        let mut request = tokio::spawn(async move {
+            sender
+                .send_request(
+                    hyper::Request::builder()
+                        .uri("http://localhost/owned")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+        });
+        timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .unwrap();
+        server.request_shutdown(budget());
+        let report = server.join().await;
+        let at_return = destroyed.load(Ordering::SeqCst);
+        release.notify_one();
+        let request_result = timeout(Duration::from_secs(1), &mut request).await;
+        if request_result.is_err() {
+            request.abort();
+            let _ = request.await;
+        }
+        client_driver.abort();
+        let _ = client_driver.await;
+        assert_eq!(
+            version,
+            hyper::Version::HTTP_2,
+            "probe must negotiate real H2"
+        );
+        assert!(report.unwrap().forced);
+        assert_eq!(at_return, 1, "indirect H2 request task cannot outlive join");
+        assert_eq!(mutations.load(Ordering::SeqCst), 0);
+        assert!(
+            matches!(request_result, Ok(Ok(Err(_)))),
+            "cancelled stream must not become successful response"
+        );
+    }
+}

@@ -690,7 +690,12 @@ mod freshness_tests {
         }
         assert_eq!(cache.negative.read().unwrap().len(), MAX_NEGATIVE_KIDS);
         let expiry = *cache.negative.read().unwrap().get("0").unwrap();
-        assert!(cache.is_negatively_cached_at("0", expiry.saturating_sub(Duration::from_nanos(1))));
+        assert!(cache.is_negatively_cached_at(
+            "0",
+            expiry
+                .checked_sub(Duration::from_nanos(1))
+                .expect("test expiry must have a preceding nanosecond")
+        ));
         assert!(!cache.is_negatively_cached_at("0", expiry));
         assert!(!cache.negative.read().unwrap().contains_key("0"));
     }

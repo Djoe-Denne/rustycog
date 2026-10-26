@@ -4080,6 +4080,8 @@ dependencies = [
  "ctrlc",
  "dotenvy",
  "futures",
+ "hyper 1.9.0",
+ "hyper-util",
  "inventory",
  "jsonwebtoken",
  "libc",

@@ -107,6 +107,9 @@ http = [
     "dep:base64",
     "dep:chrono",
     "dep:jsonwebtoken",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:futures",
     "dep:reqwest",
     "dep:rustls",
     "dep:serde",
@@ -204,6 +207,8 @@ dotenvy = { version = "0.15", optional = true }
 futures = { version = "0.3", optional = true }
 inventory = { version = "0.3", optional = true }
 jsonwebtoken = { version = "9", optional = true }
+hyper = { version = "1", features = ["server", "http1", "http2"], optional = true }
+hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"], optional = true }
 libc = { version = "0.2", optional = true }
 moka = { version = "0.12", features = ["future"], optional = true }
 rand = { version = "0.9", optional = true }

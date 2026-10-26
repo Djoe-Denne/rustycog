@@ -13,7 +13,7 @@ use hyper_util::{rt::TokioIo, server::conn::auto::Builder, service::TowerToHyper
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
-use tokio::time::{timeout_at, Instant};
+use tokio::time::{sleep_until, timeout_at, Instant};
 
 use crate::rustycog_config::ServerConfig;
 
@@ -110,6 +110,129 @@ where
     }
 }
 
+#[derive(Clone, Default)]
+struct ShutdownProgress {
+    server_result: Option<Result<(), String>>,
+    terminal: Option<Result<HttpShutdownReport, String>>,
+}
+
+struct ShutdownDriver {
+    task: Option<JoinHandle<()>>,
+    budgets: watch::Sender<HttpShutdownBudget>,
+    progress: watch::Receiver<ShutdownProgress>,
+}
+
+// The driver never owns its own handle. Its cancellation guard retains the
+// coordinator's abort capability even after ownership leaves OwnedHttpServer.
+struct ShutdownGuard {
+    group: Arc<Group>,
+    coordinator: Option<JoinHandle<anyhow::Result<()>>>,
+    armed: bool,
+    forced: bool,
+}
+
+impl ShutdownGuard {
+    fn force(&self) {
+        self.group.abort();
+        if let Some(task) = &self.coordinator {
+            task.abort();
+        }
+    }
+
+    fn next_wakeup(
+        &mut self,
+        budget: HttpShutdownBudget,
+        deadline_error: &mut Option<String>,
+    ) -> Option<Instant> {
+        let now = Instant::now();
+        if now >= budget.grace_at && !self.forced {
+            self.force();
+            self.forced = true;
+        }
+        if now >= budget.deadline {
+            deadline_error
+                .get_or_insert_with(|| "HTTP joins unobserved at final deadline".to_owned());
+            None
+        } else if lock(&self.group.tasks).forced {
+            Some(budget.deadline)
+        } else {
+            Some(budget.grace_at)
+        }
+    }
+}
+
+impl Drop for ShutdownGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.force();
+        }
+    }
+}
+
+async fn shutdown_wakeup(at: Option<Instant>) {
+    match at {
+        Some(at) => sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn drive_shutdown(
+    mut guard: ShutdownGuard,
+    mut budgets: watch::Receiver<HttpShutdownBudget>,
+    progress: watch::Sender<ShutdownProgress>,
+) {
+    let mut deadline_error = None;
+    while guard.coordinator.is_some() {
+        let budget = *budgets.borrow_and_update();
+        let wakeup = guard.next_wakeup(budget, &mut deadline_error);
+        tokio::select! {
+            result = guard.coordinator.as_mut().expect("coordinator retained") => {
+                let result = match result {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(error)) => Err(format!("HTTP coordinator failed: {error:#}")),
+                    Err(error) if lock(&guard.group.tasks).forced && error.is_cancelled() => Ok(()),
+                    Err(error) => Err(format!("HTTP coordinator join failed: {error}")),
+                };
+                // Store an observed result before any subsequent suspension.
+                progress.send_modify(|state| state.server_result = Some(result));
+                guard.coordinator = None;
+            },
+            Ok(()) = budgets.changed() => {},
+            () = shutdown_wakeup(wakeup) => {},
+        }
+    }
+    // Until the coordinator is observed it remains the sole service-time
+    // reaper. Only now may the driver consume the group's JoinSet.
+    loop {
+        let budget = *budgets.borrow_and_update();
+        let wakeup = guard.next_wakeup(budget, &mut deadline_error);
+        tokio::select! {
+            result = guard.group.reap() => match result {
+                Some(result) => guard.group.record(result, false),
+                None => break,
+            },
+            Ok(()) = budgets.changed() => {},
+            () = shutdown_wakeup(wakeup) => {},
+        }
+    }
+    let mut errors = lock(&guard.group.errors).clone();
+    if let Some(Err(error)) = &progress.borrow().server_result {
+        errors.push(error.clone());
+    }
+    if let Some(error) = deadline_error {
+        errors.push(error);
+    }
+    let result = if errors.is_empty() {
+        Ok(HttpShutdownReport {
+            forced: lock(&guard.group.tasks).forced,
+        })
+    } else {
+        Err(errors.join("; "))
+    };
+    progress.send_modify(|state| state.terminal = Some(result));
+    guard.armed = false;
+}
+
 /// Non-cloneable owner. Drop requests cancellation but cannot attest an async join.
 pub struct OwnedHttpServer {
     group: Arc<Group>,
@@ -117,7 +240,8 @@ pub struct OwnedHttpServer {
     server_result: Option<Result<(), String>>,
     terminal: Option<Result<HttpShutdownReport, String>>,
     budget: Option<HttpShutdownBudget>,
-    forced: bool,
+    shutdown: Option<ShutdownDriver>,
+    deadline_error: Option<String>,
     addrs: Vec<SocketAddr>,
 }
 
@@ -132,18 +256,31 @@ impl OwnedHttpServer {
     /// Reports coordinator failure/panic or an owned descendant panic.
     pub async fn wait_for_server_exit(&mut self) -> anyhow::Result<()> {
         if self.server_result.is_none() {
-            let result = self
-                .coordinator
-                .as_mut()
-                .expect("coordinator retained until observed")
-                .await;
-            self.server_result = Some(match result {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => Err(format!("HTTP coordinator failed: {error:#}")),
-                Err(error) if self.forced && error.is_cancelled() => Ok(()),
-                Err(error) => Err(format!("HTTP coordinator join failed: {error}")),
-            });
-            self.coordinator = None;
+            if let Some(driver) = &mut self.shutdown {
+                let result = match driver
+                    .progress
+                    .wait_for(|state| state.server_result.is_some())
+                    .await
+                {
+                    Ok(state) => state.server_result.clone().expect("result recorded"),
+                    Err(_) => {
+                        Err("HTTP shutdown driver exited before coordinator observation".into())
+                    }
+                };
+                self.server_result = Some(result);
+            } else {
+                let result = self
+                    .coordinator
+                    .as_mut()
+                    .expect("coordinator retained until observed")
+                    .await;
+                self.server_result = Some(match result {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(error)) => Err(format!("HTTP coordinator failed: {error:#}")),
+                    Err(error) => Err(format!("HTTP coordinator join failed: {error}")),
+                });
+                self.coordinator = None;
+            }
         }
         self.server_result
             .clone()
@@ -160,6 +297,29 @@ impl OwnedHttpServer {
             None => budget,
         });
         self.group.close();
+        let budget = self.budget.expect("shutdown budget recorded");
+        if let Some(driver) = &self.shutdown {
+            driver.budgets.send_replace(budget);
+        } else {
+            let (budgets, receiver) = watch::channel(budget);
+            let (progress, observed) = watch::channel(ShutdownProgress {
+                server_result: self.server_result.clone(),
+                terminal: None,
+            });
+            let guard = ShutdownGuard {
+                group: self.group.clone(),
+                coordinator: self.coordinator.take(),
+                armed: true,
+                forced: false,
+            };
+            // Tokio registers the handle before polling the future. No await
+            // separates transfer of the guard and retention of its driver.
+            self.shutdown = Some(ShutdownDriver {
+                task: Some(tokio::spawn(drive_shutdown(guard, receiver, progress))),
+                budgets,
+                progress: observed,
+            });
+        }
     }
 
     /// # Errors
@@ -172,57 +332,63 @@ impl OwnedHttpServer {
         let budget = self
             .budget
             .ok_or_else(|| anyhow::anyhow!("HTTP join requires shutdown budget"))?;
-        if self.server_result.is_none() {
-            let until = if self.forced {
-                budget.deadline
-            } else {
-                budget.grace_at
-            };
-            if timeout_at(until, self.wait_for_server_exit())
-                .await
-                .is_err()
-            {
-                self.force();
-                if timeout_at(budget.deadline, self.wait_for_server_exit())
-                    .await
-                    .is_err()
-                {
-                    anyhow::bail!("HTTP coordinator join unobserved at final deadline");
+        let driver = self.shutdown.as_mut().expect("shutdown driver retained");
+        let joined = timeout_at(
+            budget.deadline,
+            driver
+                .task
+                .as_mut()
+                .expect("driver retained until observed"),
+        )
+        .await;
+        let result = match joined {
+            Ok(joined) => {
+                driver.task = None;
+                self.server_result = driver.progress.borrow().server_result.clone();
+                match joined {
+                    Ok(()) => driver
+                        .progress
+                        .borrow()
+                        .terminal
+                        .clone()
+                        .unwrap_or_else(|| {
+                            Err("HTTP shutdown driver exited without full observation".into())
+                        }),
+                    Err(error) => {
+                        self.group.abort();
+                        Err(format!(
+                            "HTTP shutdown driver join failed; cleanup unobserved: {error}"
+                        ))
+                    }
                 }
             }
-        }
-        loop {
-            let until = if self.forced {
-                budget.deadline
-            } else {
-                budget.grace_at
-            };
-            match timeout_at(until, self.group.reap()).await {
-                Ok(Some(result)) => self.group.record(result, self.forced),
-                Ok(None) => break,
-                Err(_) if !self.forced => self.force(),
-                Err(_) => anyhow::bail!("HTTP descendant joins unobserved at final deadline"),
+            Err(_) => {
+                self.group.abort();
+                let error = self.deadline_error.get_or_insert_with(|| {
+                    "HTTP shutdown driver join unobserved at final deadline".into()
+                });
+                return Err(anyhow::Error::msg(error.clone()));
             }
-        }
-        let mut errors = lock(&self.group.errors).clone();
-        if let Some(Err(error)) = &self.server_result {
-            errors.push(error.clone());
-        }
-        let result = if errors.is_empty() {
-            Ok(HttpShutdownReport {
-                forced: self.forced,
-            })
-        } else {
-            Err(errors.join("; "))
+        };
+        let result = match (&self.deadline_error, result) {
+            (Some(error), Ok(_)) => Err(error.clone()),
+            (Some(error), Err(other)) => Err(format!("{error}; {other}")),
+            (None, result) => result,
         };
         self.terminal = Some(result.clone());
         result.map_err(anyhow::Error::msg)
     }
 
     fn force(&mut self) {
-        self.forced = true;
         self.group.abort();
         if let Some(task) = &self.coordinator {
+            task.abort();
+        }
+        if let Some(task) = self
+            .shutdown
+            .as_ref()
+            .and_then(|driver| driver.task.as_ref())
+        {
             task.abort();
         }
     }
@@ -301,7 +467,8 @@ pub async fn start_router_owned(
         server_result: None,
         terminal: None,
         budget: None,
-        forced: false,
+        shutdown: None,
+        deadline_error: None,
         addrs,
     };
     owner.coordinator = Some(tokio::spawn(async move {

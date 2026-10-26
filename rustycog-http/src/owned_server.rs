@@ -1148,6 +1148,44 @@ mod tests {
             .unwrap()
     }
 
+    fn observe_h2_settings(
+        mut connection: hyper::client::conn::http2::Connection<
+            hyper_util::rt::TokioIo<TcpStream>,
+            Body,
+            hyper_util::rt::TokioExecutor,
+        >,
+    ) -> (
+        tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<bool>>,
+        tokio::task::JoinHandle<hyper::Result<()>>,
+    ) {
+        let (samples, mut requests) =
+            tokio::sync::mpsc::unbounded_channel::<tokio::sync::oneshot::Sender<bool>>();
+        let driver = tokio::spawn(async move {
+            std::future::poll_fn(|cx| {
+                let result = std::future::Future::poll(std::pin::Pin::new(&mut connection), cx);
+                while let std::task::Poll::Ready(Some(reply)) = requests.poll_recv(cx) {
+                    let _ = reply.send(connection.is_extended_connect_protocol_enabled());
+                }
+                result
+            })
+            .await
+        });
+        (samples, driver)
+    }
+
+    async fn sample_h2_setting(
+        driver: &tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<bool>>,
+    ) -> Result<bool, &'static str> {
+        let (reply, received) = tokio::sync::oneshot::channel();
+        driver
+            .send(reply)
+            .map_err(|_| "observation driver stopped")?;
+        timeout(Duration::from_secs(1), received)
+            .await
+            .map_err(|_| "observation timed out")?
+            .map_err(|_| "observation reply dropped")
+    }
+
     // C-3 / QA compatibility item 1: preserve the legacy H2 CONNECT protocol.
     #[tokio::test]
     async fn owned_http2_announces_and_routes_extended_connect() {
@@ -1171,25 +1209,13 @@ mod tests {
             );
         let mut server = start(router).await;
         let socket = TcpStream::connect(server.local_addrs()[0]).await.unwrap();
-        let (mut sender, mut connection) = hyper::client::conn::http2::handshake(
+        let (mut sender, connection) = hyper::client::conn::http2::handshake(
             hyper_util::rt::TokioExecutor::new(),
             hyper_util::rt::TokioIo::new(socket),
         )
         .await
         .unwrap();
-        let setting = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let driver_setting = setting.clone();
-        let driver = tokio::spawn(async move {
-            std::future::poll_fn(|cx| {
-                let result = std::future::Future::poll(std::pin::Pin::new(&mut connection), cx);
-                driver_setting.store(
-                    connection.is_extended_connect_protocol_enabled(),
-                    Ordering::SeqCst,
-                );
-                result
-            })
-            .await
-        });
+        let (samples, driver) = observe_h2_settings(connection);
         // A response on this connection is a barrier after the peer's SETTINGS,
         // not a substitute for the CONNECT request below.
         let probe = timeout(
@@ -1202,7 +1228,7 @@ mod tests {
             ),
         )
         .await;
-        let enabled = setting.load(Ordering::SeqCst);
+        let enabled = sample_h2_setting(&samples).await;
         let response = timeout(
             Duration::from_secs(1),
             sender.send_request(extended_connect_request()),
@@ -1223,11 +1249,12 @@ mod tests {
         drop(probe);
         drop(response);
         drop(sender);
+        drop(samples);
         server.request_shutdown(budget());
         let joined = server.join().await;
         driver.abort();
         let driver_join = driver.await;
-        eprintln!("HTTP_C3 setting={enabled} probe_h2={probe_h2} routed={routed:?} status={status:?} marker={marker:?} joined={joined:?} driver={driver_join:?} cleanup=true");
+        eprintln!("HTTP_C3 fresh_after_probe={enabled:?} probe_h2={probe_h2} routed={routed:?} status={status:?} marker={marker:?} joined={joined:?} driver={driver_join:?} cleanup=true");
         assert!(
             probe_h2,
             "precondition: real H2 response after peer SETTINGS"
@@ -1236,8 +1263,9 @@ mod tests {
             joined.is_ok(),
             "HTTP owner must join before the protocol oracle"
         );
-        assert!(
+        assert_eq!(
             enabled,
+            Ok(true),
             "C-3: peer must advertise SETTINGS_ENABLE_CONNECT_PROTOCOL"
         );
         assert_eq!(

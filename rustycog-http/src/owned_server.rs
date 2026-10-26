@@ -550,7 +550,8 @@ where
     S::Future: Send,
 {
     let mut stop = group.stop.subscribe();
-    let builder = Builder::new(OwnedExecutor(group));
+    let mut builder = Builder::new(OwnedExecutor(group));
+    builder.http2().enable_connect_protocol();
     let connection =
         builder.serve_connection_with_upgrades(TokioIo::new(io), TowerToHyperService::new(service));
     tokio::pin!(connection);

@@ -1138,6 +1138,123 @@ mod tests {
         );
     }
 
+    fn extended_connect_request() -> hyper::Request<Body> {
+        hyper::Request::builder()
+            .method(hyper::Method::CONNECT)
+            .uri("http://localhost/extended")
+            .extension(hyper::ext::Protocol::from_static("rustycog-test"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    // C-3 / QA compatibility item 1: preserve the legacy H2 CONNECT protocol.
+    #[tokio::test]
+    async fn owned_http2_announces_and_routes_extended_connect() {
+        let (observed, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let router = Router::new()
+            .route("/probe", get(|| async { "settings received" }))
+            .route(
+                "/extended",
+                axum::routing::any(move |request: Request| {
+                    let observed = observed.clone();
+                    async move {
+                        let protocol = request
+                            .extensions()
+                            .get::<hyper::ext::Protocol>()
+                            .map(|protocol| protocol.as_str().to_owned());
+                        let _ =
+                            observed.send((request.method().clone(), request.version(), protocol));
+                        ([("x-connect-witness", "router-received")], "connected")
+                    }
+                }),
+            );
+        let mut server = start(router).await;
+        let socket = TcpStream::connect(server.local_addrs()[0]).await.unwrap();
+        let (mut sender, mut connection) = hyper::client::conn::http2::handshake(
+            hyper_util::rt::TokioExecutor::new(),
+            hyper_util::rt::TokioIo::new(socket),
+        )
+        .await
+        .unwrap();
+        let setting = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let driver_setting = setting.clone();
+        let driver = tokio::spawn(async move {
+            std::future::poll_fn(|cx| {
+                let result = std::future::Future::poll(std::pin::Pin::new(&mut connection), cx);
+                driver_setting.store(
+                    connection.is_extended_connect_protocol_enabled(),
+                    Ordering::SeqCst,
+                );
+                result
+            })
+            .await
+        });
+        // A response on this connection is a barrier after the peer's SETTINGS,
+        // not a substitute for the CONNECT request below.
+        let probe = timeout(
+            Duration::from_secs(1),
+            sender.send_request(
+                hyper::Request::builder()
+                    .uri("http://localhost/probe")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+        )
+        .await;
+        let enabled = setting.load(Ordering::SeqCst);
+        let response = timeout(
+            Duration::from_secs(1),
+            sender.send_request(extended_connect_request()),
+        )
+        .await;
+        let routed = received.try_recv().ok();
+        let reply = response
+            .as_ref()
+            .ok()
+            .and_then(|response| response.as_ref().ok());
+        let status = reply.map(hyper::Response::status);
+        let marker = reply
+            .and_then(|response| response.headers().get("x-connect-witness"))
+            .cloned();
+        // Release both response streams and client before the strict red oracle.
+        let probe_h2 =
+            matches!(&probe, Ok(Ok(response)) if response.version() == hyper::Version::HTTP_2);
+        drop(probe);
+        drop(response);
+        drop(sender);
+        server.request_shutdown(budget());
+        let joined = server.join().await;
+        driver.abort();
+        let driver_join = driver.await;
+        eprintln!("HTTP_C3 setting={enabled} probe_h2={probe_h2} routed={routed:?} status={status:?} marker={marker:?} joined={joined:?} driver={driver_join:?} cleanup=true");
+        assert!(
+            probe_h2,
+            "precondition: real H2 response after peer SETTINGS"
+        );
+        assert!(
+            joined.is_ok(),
+            "HTTP owner must join before the protocol oracle"
+        );
+        assert!(
+            enabled,
+            "C-3: peer must advertise SETTINGS_ENABLE_CONNECT_PROTOCOL"
+        );
+        assert_eq!(
+            routed,
+            Some((
+                hyper::Method::CONNECT,
+                hyper::Version::HTTP_2,
+                Some("rustycog-test".into())
+            )),
+            "C-3: actual Extended CONNECT must reach the router with its protocol"
+        );
+        assert_eq!(status, Some(hyper::StatusCode::OK));
+        assert_eq!(
+            marker.as_ref().map(|value| value.as_bytes()),
+            Some(b"router-received".as_slice())
+        );
+    }
+
     // G-3: a real H2 stream must be owned through Hyper's indirect executor.
     #[tokio::test]
     async fn owned_http2_admitted_stream_is_destroyed_before_forced_join() {

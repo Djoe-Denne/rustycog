@@ -73,6 +73,8 @@ async fn platform_key_cannot_substitute_configured_platform_issuer() {
         jwt: JwtAuthConfig {
             allowed_algorithms: vec!["RS256".into()],
             issuer: Some("https://expected.example/iam".into()),
+            platform_issuer: Some("https://expected.example/iam".into()),
+            allow_historical_platform_issuer: Some(false),
             audience: Some(TEST_JWT_AUDIENCE.into()),
             ..JwtAuthConfig::default()
         },
@@ -93,6 +95,8 @@ async fn canonical_fixture_matches_configured_platform_issuer_without_bypass() {
         jwt: JwtAuthConfig {
             allowed_algorithms: vec!["RS256".into()],
             issuer: Some(issuer.into()),
+            platform_issuer: Some(issuer.into()),
+            allow_historical_platform_issuer: Some(false),
             audience: Some(TEST_JWT_AUDIENCE.into()),
             ..JwtAuthConfig::default()
         },
@@ -153,7 +157,18 @@ fn publisher_metadata_missing_unknown_duplicate_or_bad_binding_is_invalid() {
 }
 
 fn rs256_extractor() -> UserIdExtractor {
-    UserIdExtractor::from_inline_jwks(test_rs256_jwks_json(), Some(TEST_JWT_AUDIENCE))
+    let auth = AuthConfig {
+        jwt: JwtAuthConfig {
+            allowed_algorithms: vec!["RS256".into()],
+            issuer: Some(TEST_PLATFORM_ISSUER.into()),
+            audience: Some(TEST_JWT_AUDIENCE.into()),
+            platform_issuer: Some(TEST_PLATFORM_ISSUER.into()),
+            allow_historical_platform_issuer: Some(false),
+            ..JwtAuthConfig::default()
+        },
+        ..AuthConfig::default()
+    };
+    UserIdExtractor::from_config_with_inline_jwks(auth, test_rs256_jwks_json())
         .expect("inline JWKS extractor")
 }
 
@@ -166,6 +181,8 @@ async fn seeded_rs256_extractor(url: &str, document: String) -> UserIdExtractor 
             allowed_algorithms: vec!["RS256".into()],
             jwks_url: Some(url.into()),
             issuer: Some(TEST_PLATFORM_ISSUER.into()),
+            platform_issuer: Some(TEST_PLATFORM_ISSUER.into()),
+            allow_historical_platform_issuer: Some(false),
             audience: Some(TEST_JWT_AUDIENCE.into()),
             ..JwtAuthConfig::default()
         },
@@ -297,6 +314,8 @@ async fn seeded_hs256_window_uses_only_its_explicit_independent_secret() {
             hs256_secret: Some(TEST_HS256_SECRET.into()),
             jwks_url: Some(server.uri()),
             issuer: Some(TEST_PLATFORM_ISSUER.into()),
+            platform_issuer: Some(TEST_PLATFORM_ISSUER.into()),
+            allow_historical_platform_issuer: Some(false),
             audience: Some(TEST_JWT_AUDIENCE.into()),
             ..JwtAuthConfig::default()
         },
@@ -453,6 +472,8 @@ async fn hs256_rejected_when_only_rs256_allowed() {
             hs256_secret: Some(TEST_HS256_SECRET.to_string()),
             allowed_algorithms: vec!["RS256".to_string()],
             audience: Some(TEST_JWT_AUDIENCE.to_string()),
+            platform_issuer: Some(TEST_PLATFORM_ISSUER.into()),
+            allow_historical_platform_issuer: Some(false),
             ..JwtAuthConfig::default()
         },
         ..AuthConfig::default()
@@ -478,6 +499,8 @@ async fn hs256_accepted_when_allowed_with_secret() {
             allowed_algorithms: vec!["RS256".to_string(), "HS256".to_string()],
             issuer: Some("iamrusty".to_string()),
             audience: Some(TEST_JWT_AUDIENCE.to_string()),
+            platform_issuer: Some(TEST_PLATFORM_ISSUER.into()),
+            allow_historical_platform_issuer: Some(true),
             ..JwtAuthConfig::default()
         },
         ..AuthConfig::default()

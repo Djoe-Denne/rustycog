@@ -1,14 +1,10 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
-use tracing::{debug, info};
+use tracing::debug;
 use wiremock::MockServer;
 
 /// Shared wiremock server instance for all fixtures
 static MOCK_SERVER: OnceCell<Arc<MockServer>> = OnceCell::const_new();
-
-/// Flag to track if cleanup handler has been registered
-static CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Get or create the shared mock server instance on `127.0.0.1:3000`.
 ///
@@ -28,8 +24,12 @@ pub async fn get_mock_server() -> Arc<MockServer> {
             let server = Arc::new(MockServer::builder().listener(listener).start().await);
             debug!("🚀 Started shared wiremock server at: {}", server.uri());
 
-            // Register cleanup handler on first server creation
-            register_cleanup_handler();
+            // Lifecycle note (T-4): wiremock is an in-process listener — the OS
+            // reclaims it at process exit, and the process-exit guard owns
+            // container teardown. No exit handler here: a Ctrl+C handler that
+            // called std::process::exit would bypass the CRT atexit hook and
+            // therefore the guard (proven Windows boundary), while a log-only
+            // atexit no-op only LOOKED like a cleanup guarantee.
 
             server
         })
@@ -49,32 +49,6 @@ pub async fn reset_all_mocks() {
         debug!("🧹 Resetting all wiremock mocks for test isolation");
         server.reset().await;
         debug!("✅ All wiremock mocks reset successfully");
-    }
-}
-
-/// Register cleanup handler to reset mocks when process exits
-fn register_cleanup_handler() {
-    extern "C" fn cleanup_on_exit() {
-        debug!("🧹 Process exiting, wiremock server will be cleaned up automatically");
-    }
-
-    // Only register once
-    if CLEANUP_REGISTERED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
-    info!("📝 Registering wiremock cleanup handler");
-
-    // Register cleanup for Ctrl+C and other signals
-    let _ = ctrlc::set_handler(move || {
-        info!("🧹 Received termination signal, cleaning up wiremock server");
-        // Note: We can't do async cleanup here, but the server will be cleaned up
-        // when the process exits. This is just for logging.
-        std::process::exit(0);
-    });
-
-    unsafe {
-        libc::atexit(cleanup_on_exit);
     }
 }
 

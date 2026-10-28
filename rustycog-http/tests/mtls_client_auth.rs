@@ -35,7 +35,7 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-fn peer_handler(req: Request) -> String {
+async fn peer_handler(req: Request) -> String {
     req.extensions().get::<PeerClientCertificate>().map_or_else(
         || "none".to_string(),
         |cert| format!("der:{}", hex_encode(&cert.der)),
@@ -482,4 +482,197 @@ async fn dual_bind_tls_bind_conflict_releases_http_listener() {
 #[tokio::test]
 async fn dual_bind_http_bind_conflict_does_not_leave_tls_listener() {
     assert_dual_bind_conflict_releases_sibling(false).await;
+}
+
+/// G-3: exercise the additive owner, not only the unchanged legacy listener.
+#[tokio::test]
+async fn owned_tls_preserves_optional_and_required_client_auth() {
+    use rustycog_framework::http::{start_router_owned, HttpShutdownBudget};
+    for required in [false, true] {
+        install_crypto();
+        let pki = generate_pki();
+        let mut config = server_config(&pki, pki.client_ca_path.clone(), 0);
+        config.tls_require_client_cert = required;
+        let app = Router::new().route("/peer", get(peer_handler));
+        let mut server = start_router_owned(app, config).await.unwrap();
+        let addresses = server.local_addrs();
+        let url = format!("https://{}/peer", addresses[0]);
+        let trusted = https_client(Some(&pki.client_identity_pem));
+        let trusted_body = get_body(&trusted, &url).await;
+        let bare = https_client(None).get(&url).send().await;
+        let bare_body = match bare {
+            Ok(response) => Some(response.text().await.unwrap()),
+            Err(_) => None,
+        };
+        let foreign = https_client(Some(&pki.foreign_identity_pem))
+            .get(&url)
+            .send()
+            .await;
+        let foreign_accepted = foreign
+            .as_ref()
+            .is_ok_and(|response| response.status().is_success());
+        drop(foreign);
+        drop(trusted);
+        let now = tokio::time::Instant::now();
+        server.request_shutdown(
+            HttpShutdownBudget::new(now + Duration::from_secs(1), now + Duration::from_secs(2))
+                .unwrap(),
+        );
+        let report = server.join().await;
+        assert_eq!(addresses.len(), 1, "port zero selects TLS-only listener");
+        assert_eq!(
+            trusted_body,
+            format!("der:{}", hex_encode(&pki.client_leaf_der))
+        );
+        assert_eq!(bare_body, if required { None } else { Some("none".into()) });
+        assert!(!foreign_accepted, "untrusted CA must not reach handler");
+        assert!(!report.unwrap().forced);
+    }
+}
+
+/// G-3/G-4: failed second bind releases the first listener atomically.
+#[tokio::test]
+async fn owned_dual_bind_failure_releases_partial_listener_and_fails_closed_without_ca() {
+    use rustycog_framework::http::start_router_owned;
+    install_crypto();
+    let pki = generate_pki();
+    let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let sibling = reservation.local_addr().unwrap();
+    let config = dual_bind_config(
+        &pki,
+        sibling.port(),
+        pki.client_ca_path.clone(),
+        occupied.local_addr().unwrap().port(),
+    );
+    drop(reservation);
+    let failed = start_router_owned(Router::new(), config).await;
+    let deliberate_error = match failed {
+        Ok(server) => {
+            drop(server);
+            false
+        }
+        Err(error) => error.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::AddrInUse)
+        }),
+    };
+    let rebound = TcpListener::bind(sibling);
+    let released = rebound.is_ok();
+    drop(rebound);
+    drop(occupied);
+    let mut config = server_config(&pki, String::new(), 0);
+    config.tls_require_client_cert = true;
+    let missing_ca = start_router_owned(Router::new(), config).await;
+    let missing_ca_error = match missing_ca {
+        Ok(server) => {
+            drop(server);
+            String::new()
+        }
+        Err(error) => error.to_string(),
+    };
+    assert!(deliberate_error, "startup must preserve original AddrInUse");
+    assert!(
+        released,
+        "partially bound sibling must be exclusively bindable on return"
+    );
+    assert!(missing_ca_error.contains("fail-closed"));
+}
+
+/// G-3: read ServerHello without finishing the client handshake, proving the
+/// server admitted this handshake before asking its owner to force/join it.
+#[tokio::test]
+async fn owned_suspended_tls_handshake_is_forced_and_socket_closed() {
+    use rustycog_framework::http::{start_router_owned, HttpShutdownBudget};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    install_crypto();
+    let pki = generate_pki();
+    let config = server_config(&pki, String::new(), 0);
+    let mut server = start_router_owned(Router::new(), config).await.unwrap();
+    let mut socket = tokio::net::TcpStream::connect(server.local_addrs()[0])
+        .await
+        .unwrap();
+    let client_config = rustls::ClientConfig::builder()
+        .with_root_certificates(rustls::RootCertStore::empty())
+        .with_no_client_auth();
+    let mut client = rustls::ClientConnection::new(
+        std::sync::Arc::new(client_config),
+        rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+    )
+    .unwrap();
+    let mut hello = Vec::new();
+    client.write_tls(&mut hello).unwrap();
+    socket.write_all(&hello).await.unwrap();
+    let mut response = [0; 4096];
+    let server_hello = tokio::time::timeout(Duration::from_secs(2), socket.read(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    let now = tokio::time::Instant::now();
+    server.request_shutdown(
+        HttpShutdownBudget::new(
+            now + Duration::from_millis(50),
+            now + Duration::from_secs(1),
+        )
+        .unwrap(),
+    );
+    let report = server.join().await;
+    let tail = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            match socket.read(&mut response).await {
+                Ok(0) => return true,
+                Ok(_) => {}
+                Err(error) => {
+                    return matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                    )
+                }
+            }
+        }
+    })
+    .await;
+    drop(socket);
+    assert!(
+        server_hello > 0,
+        "real server handshake must have entered before stop"
+    );
+    assert!(
+        report.unwrap().forced,
+        "incomplete TLS handshake needs force"
+    );
+    assert!(
+        tail.unwrap(),
+        "owned handshake socket must close after join"
+    );
+}
+
+/// G-3: both real listeners remain available with the original dual-bind order.
+#[tokio::test]
+async fn owned_dual_bind_preserves_plain_http_and_trusted_mtls_metadata() {
+    use rustycog_framework::http::{start_router_owned, HttpShutdownBudget};
+    install_crypto();
+    let pki = generate_pki();
+    let config = dual_bind_config(&pki, ephemeral_port(), pki.client_ca_path.clone(), 0);
+    let mut server = start_router_owned(Router::new().route("/peer", get(peer_handler)), config)
+        .await
+        .unwrap();
+    let addresses = server.local_addrs();
+    let plain = get_body(&http_client(), &format!("http://{}/peer", addresses[0])).await;
+    let secure = get_body(
+        &https_client(Some(&pki.client_identity_pem)),
+        &format!("https://{}/peer", addresses[1]),
+    )
+    .await;
+    let now = tokio::time::Instant::now();
+    server.request_shutdown(
+        HttpShutdownBudget::new(now + Duration::from_secs(1), now + Duration::from_secs(2))
+            .unwrap(),
+    );
+    let report = server.join().await;
+    assert_eq!(addresses.len(), 2);
+    assert_eq!(plain, "none");
+    assert_eq!(secure, format!("der:{}", hex_encode(&pki.client_leaf_der)));
+    assert!(!report.unwrap().forced);
 }

@@ -7,6 +7,7 @@ pub mod jwt_handler;
 mod mesh_principal;
 pub mod middleware_auth;
 pub mod middleware_permission;
+mod owned_server;
 mod tls;
 pub mod tracing_middleware;
 
@@ -17,6 +18,9 @@ pub use jwks::LocalJwksSeed;
 pub use jwt::TokenClaims;
 pub use jwt_handler::{JwtPrincipal, UserIdExtractionHandler, UserIdExtractor, ACCESS_TOKEN_TYP};
 pub use middleware_auth::{auth_middleware, optional_auth_middleware, AuthUser, OptionalAuthUser};
+pub use owned_server::{
+    start_router_owned, HttpShutdownBudget, HttpShutdownReport, OwnedHttpServer,
+};
 pub use tls::PeerClientCertificate;
 pub use tracing_middleware::{
     get_correlation_id, get_request_id, tracing_middleware, X_CORRELATION_ID, X_REQUEST_ID,

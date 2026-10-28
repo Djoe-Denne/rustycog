@@ -9,7 +9,6 @@ use crate::testing::common::ServiceTestDescriptor;
 use rustycog::config::DatabaseConfig;
 use rustycog::db::DbConnectionPool;
 use sea_orm::{Database, DatabaseConnection, DbErr};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
@@ -18,9 +17,6 @@ use tracing::{debug, info, warn};
 
 /// Global test database container instance
 static TEST_CONTAINER: OnceLock<Arc<Mutex<Option<Arc<TestDatabaseContainer>>>>> = OnceLock::new();
-
-/// Flag to track if cleanup handler has been registered
-static CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Test database container wrapper
 pub struct TestDatabaseContainer {
@@ -195,9 +191,6 @@ async fn get_or_create_test_container() -> Result<Arc<TestDatabaseContainer>, Db
 
     *container_guard = Some(test_container.clone());
 
-    // Register cleanup handler on first container creation
-    register_cleanup_handler();
-
     Ok(test_container)
 }
 
@@ -245,28 +238,6 @@ async fn wait_for_database(database_url: &str) -> Result<(), DbErr> {
     Err(DbErr::Custom(format!(
         "Database failed to become ready after {max_attempts} attempts"
     )))
-}
-
-/// Register cleanup handler to stop container when process exits
-fn register_cleanup_handler() {
-    extern "C" fn cleanup_on_exit() {
-        debug!("Process exiting, attempting to cleanup test database container...");
-        // Logging is not cleanup proof. The parent must join creations before
-        // runtime shutdown and verify its exact-ID ledger against Docker.
-    }
-
-    // Only register once
-    if CLEANUP_REGISTERED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
-    info!("Registering test database container cleanup handler");
-
-    // Signals must not infer ownership by a static name or bypass joined cleanup.
-
-    unsafe {
-        libc::atexit(cleanup_on_exit);
-    }
 }
 
 /// Create a base test configuration

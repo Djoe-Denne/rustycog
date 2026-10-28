@@ -10,7 +10,6 @@ use rustycog::config::{load_config_part, QueueConfig, SqsConfig};
 use rustycog::events::event::DomainEvent;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -21,9 +20,6 @@ use uuid;
 
 /// Global test SQS container instance
 static TEST_SQS_CONTAINER: OnceLock<Arc<Mutex<Option<Arc<TestSqsContainer>>>>> = OnceLock::new();
-
-/// Flag to track if cleanup handler has been registered
-static SQS_CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Test SQS container wrapper
 pub struct TestSqsContainer {
@@ -731,17 +727,7 @@ async fn get_or_create_test_sqs_container(
     let (test_container, sqs_config) = start_test_sqs_container().await?;
     *container_guard = Some(test_container.clone());
     drop(container_guard);
-    register_sqs_cleanup_handler();
     Ok((test_container, sqs_config))
-}
-
-/// Register cleanup handler for SQS containers
-fn register_sqs_cleanup_handler() {
-    if SQS_CLEANUP_REGISTERED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
-    info!("Registering SQS test container cleanup handler");
 }
 
 /// Test fixture for SQS integration tests

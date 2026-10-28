@@ -1,6 +1,7 @@
 pub mod database;
 mod fixture_runtime;
 pub use fixture_runtime::join_fixture_creations;
+pub use fixture_runtime::{start_service_testcontainer, OwnedContainer as OwnedTestContainer};
 pub mod db_utils;
 pub mod http_test;
 pub mod mock_event_publisher;

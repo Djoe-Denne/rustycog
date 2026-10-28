@@ -25,6 +25,8 @@ fn auth(url: &str) -> AuthConfig {
             allowed_algorithms: vec!["RS256".into()],
             jwks_url: Some(url.into()),
             issuer: Some(TEST_PLATFORM_ISSUER.into()),
+            platform_issuer: Some(TEST_PLATFORM_ISSUER.into()),
+            allow_historical_platform_issuer: Some(false),
             audience: Some(TEST_JWT_AUDIENCE.into()),
             ..JwtAuthConfig::default()
         },

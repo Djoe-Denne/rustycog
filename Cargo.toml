@@ -156,6 +156,7 @@ permission = [
     "core",
     "config",
     "dep:async-trait",
+    "dep:base64",
     "dep:moka",
     "dep:reqwest",
     "dep:serde",

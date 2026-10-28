@@ -243,7 +243,7 @@ impl PermissionChecker for OpenFgaPermissionChecker {
 /// In-memory permission checker used by unit tests and local fixtures.
 #[derive(Default)]
 pub struct InMemoryPermissionChecker {
-    tuples: std::sync::RwLock<std::collections::HashSet<(Subject, Permission, ResourceRef)>>,
+    tuples: std::sync::RwLock<std::collections::HashSet<(String, Permission, ResourceRef)>>,
 }
 
 impl InMemoryPermissionChecker {
@@ -258,7 +258,7 @@ impl InMemoryPermissionChecker {
             .tuples
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.insert((subject, action, resource));
+        guard.insert((subject.to_string(), action, resource));
     }
 
     /// Revoke `action` on `resource` from `subject`.
@@ -267,7 +267,7 @@ impl InMemoryPermissionChecker {
             .tuples
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.remove(&(subject, action, resource));
+        guard.remove(&(subject.to_string(), action, resource));
     }
 }
 
@@ -283,7 +283,7 @@ impl PermissionChecker for InMemoryPermissionChecker {
             .tuples
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok(guard.contains(&(subject, action, resource)))
+        Ok(guard.contains(&(subject.to_string(), action, resource)))
     }
 }
 
@@ -293,7 +293,7 @@ impl PermissionChecker for InMemoryPermissionChecker {
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct CacheKey {
-    user_id: uuid::Uuid,
+    subject: Subject,
     permission: Permission,
     object_type: &'static str,
     object_id: uuid::Uuid,
@@ -328,21 +328,14 @@ impl PermissionChecker for CachedPermissionChecker {
         action: Permission,
         resource: ResourceRef,
     ) -> Result<bool, DomainError> {
-        // Wildcard subjects (anonymous-public-read via `viewer@user:*`) are
-        // intentionally **not** cached. The cache key is keyed on
-        // `user_id: Uuid` and the wildcard reuses `Uuid::nil()`, which would
-        // collide across every anonymous request and let one project's
-        // public-read decision answer for another. Skipping the cache also
-        // means a freshly-flipped public->private (when sentinel-sync
-        // removes the wildcard tuple) is observed on the very next request
-        // instead of after the TTL window, which is the right safety
-        // posture for a relation that grants everyone read access.
+        // Preserve immediate public->private visibility for anonymous reads;
+        // authenticated cache keys below retain both subject kind and authority.
         if subject.is_wildcard() {
             return self.inner.check(subject, action, resource).await;
         }
 
         let key = CacheKey {
-            user_id: subject.user_id,
+            subject: subject.clone(),
             permission: action,
             object_type: resource.object_type,
             object_id: resource.object_id,
@@ -387,7 +380,7 @@ impl PermissionChecker for MetricsPermissionChecker {
         resource: ResourceRef,
     ) -> Result<bool, DomainError> {
         let started = std::time::Instant::now();
-        let result = self.inner.check(subject, action, resource).await;
+        let result = self.inner.check(subject.clone(), action, resource).await;
         let elapsed_us = started.elapsed().as_micros();
 
         match &result {
@@ -419,23 +412,75 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn principal_cache_keys_include_issuer() {
+        use crate::rustycog_permission::{PrincipalPolicy, PrincipalRef};
+        let policy = PrincipalPolicy::new("https://platform.example/iam", false).unwrap();
+        let id = uuid::Uuid::new_v4();
+        let platform = Subject::from_principal(
+            PrincipalRef::new(&policy.platform_issuer, id).unwrap(),
+            &policy,
+        )
+        .unwrap();
+        let org1 = Subject::from_principal(
+            PrincipalRef::new("https://org1.example/iam", id).unwrap(),
+            &policy,
+        )
+        .unwrap();
+        let org2 = Subject::from_principal(
+            PrincipalRef::new("https://org2.example/iam", id).unwrap(),
+            &policy,
+        )
+        .unwrap();
+        let inner = Arc::new(InMemoryPermissionChecker::new());
+        let resource = ResourceRef::new("organization", uuid::Uuid::new_v4());
+        inner.allow(Subject::new(id), Permission::Admin, resource);
+        let cached = CachedPermissionChecker::new(inner.clone(), Duration::from_secs(30), 128);
+        assert!(cached
+            .check(platform.clone(), Permission::Admin, resource)
+            .await
+            .unwrap());
+        assert!(!cached
+            .check(org1.clone(), Permission::Admin, resource)
+            .await
+            .unwrap());
+        assert!(!cached
+            .check(org2.clone(), Permission::Admin, resource)
+            .await
+            .unwrap());
+        // Own qualified grant is effective without leaking into another authority.
+        inner.allow(org1.clone(), Permission::Write, resource);
+        assert!(cached
+            .check(org1, Permission::Write, resource)
+            .await
+            .unwrap());
+        assert!(!cached
+            .check(org2, Permission::Write, resource)
+            .await
+            .unwrap());
+        assert!(!cached
+            .check(platform, Permission::Write, resource)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
     async fn in_memory_checker_allows_after_grant() {
         let checker = InMemoryPermissionChecker::new();
         let subject = Subject::new(uuid::Uuid::new_v4());
         let resource = ResourceRef::new("organization", uuid::Uuid::new_v4());
 
         assert!(!checker
-            .check(subject, Permission::Read, resource)
+            .check(subject.clone(), Permission::Read, resource)
             .await
             .unwrap());
 
-        checker.allow(subject, Permission::Read, resource);
+        checker.allow(subject.clone(), Permission::Read, resource);
         assert!(checker
-            .check(subject, Permission::Read, resource)
+            .check(subject.clone(), Permission::Read, resource)
             .await
             .unwrap());
 
-        checker.deny(subject, Permission::Read, resource);
+        checker.deny(subject.clone(), Permission::Read, resource);
         assert!(!checker
             .check(subject, Permission::Read, resource)
             .await
@@ -447,7 +492,7 @@ mod tests {
         let inner = Arc::new(InMemoryPermissionChecker::new());
         let subject = Subject::new(uuid::Uuid::new_v4());
         let resource = ResourceRef::new("project", uuid::Uuid::new_v4());
-        inner.allow(subject, Permission::Write, resource);
+        inner.allow(subject.clone(), Permission::Write, resource);
 
         let cached = CachedPermissionChecker::new(
             inner.clone() as Arc<dyn PermissionChecker>,
@@ -456,10 +501,10 @@ mod tests {
         );
 
         assert!(cached
-            .check(subject, Permission::Write, resource)
+            .check(subject.clone(), Permission::Write, resource)
             .await
             .unwrap());
-        inner.deny(subject, Permission::Write, resource);
+        inner.deny(subject.clone(), Permission::Write, resource);
         assert!(cached
             .check(subject, Permission::Write, resource)
             .await
@@ -471,7 +516,7 @@ mod tests {
         let inner = Arc::new(InMemoryPermissionChecker::new());
         let wildcard = Subject::wildcard();
         let resource = ResourceRef::new("project", uuid::Uuid::new_v4());
-        inner.allow(wildcard, Permission::Read, resource);
+        inner.allow(wildcard.clone(), Permission::Read, resource);
 
         let cached = CachedPermissionChecker::new(
             inner.clone() as Arc<dyn PermissionChecker>,
@@ -481,7 +526,7 @@ mod tests {
 
         // First wildcard check -> allow (inner has the tuple).
         assert!(cached
-            .check(wildcard, Permission::Read, resource)
+            .check(wildcard.clone(), Permission::Read, resource)
             .await
             .unwrap());
 
@@ -489,7 +534,7 @@ mod tests {
         // wildcard call must observe the new state immediately. If the
         // wildcard were cached, this assertion would fail because the
         // cached `true` would be returned instead.
-        inner.deny(wildcard, Permission::Read, resource);
+        inner.deny(wildcard.clone(), Permission::Read, resource);
         assert!(!cached
             .check(wildcard, Permission::Read, resource)
             .await
@@ -498,12 +543,12 @@ mod tests {
         // Sanity: a concrete user-id subject with the same key shape is
         // still cached (regression guard for the rest of the cache logic).
         let user_subject = Subject::new(uuid::Uuid::new_v4());
-        inner.allow(user_subject, Permission::Read, resource);
+        inner.allow(user_subject.clone(), Permission::Read, resource);
         assert!(cached
-            .check(user_subject, Permission::Read, resource)
+            .check(user_subject.clone(), Permission::Read, resource)
             .await
             .unwrap());
-        inner.deny(user_subject, Permission::Read, resource);
+        inner.deny(user_subject.clone(), Permission::Read, resource);
         assert!(cached
             .check(user_subject, Permission::Read, resource)
             .await

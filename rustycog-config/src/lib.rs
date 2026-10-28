@@ -276,6 +276,12 @@ pub struct MeshAuthConfig {
 /// JWT verification configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JwtAuthConfig {
+    /// Exact platform authority for authorization, not inferred from verification.
+    #[serde(default)]
+    pub platform_issuer: Option<String>,
+    /// Explicit legacy JWT window; absence is not a permissive default.
+    #[serde(default)]
+    pub allow_historical_platform_issuer: Option<bool>,
     /// HS256 secret used to verify bearer tokens (required when HS256 is allowed).
     #[serde(default)]
     pub hs256_secret: Option<String>,
@@ -315,6 +321,8 @@ const fn default_jwks_negative_cache_ttl_secs() -> u64 {
 impl Default for JwtAuthConfig {
     fn default() -> Self {
         Self {
+            platform_issuer: None,
+            allow_historical_platform_issuer: None,
             hs256_secret: None,
             issuer: None,
             audience: None,

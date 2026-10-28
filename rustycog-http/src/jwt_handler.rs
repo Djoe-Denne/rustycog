@@ -3,6 +3,7 @@
 use super::jwks::{normalize_authority_url, JwksCache, LocalJwksSeed};
 use crate::rustycog_command::{Command, CommandError, CommandHandler, ValidateTokenCommand};
 use crate::rustycog_config::{AuthConfig, JwtAuthConfig, MeshAuthConfig};
+use crate::rustycog_permission::{PrincipalPolicy, PrincipalRef};
 use async_trait::async_trait;
 use jsonwebtoken::{
     decode, decode_header, errors::ErrorKind, Algorithm, DecodingKey, Header, Validation,
@@ -31,6 +32,7 @@ pub struct JwtPrincipal {
 /// User ID / principal extractor backed by RS256 JWKS and optional HS256.
 #[derive(Clone)]
 pub struct UserIdExtractor {
+    principal_policy: Option<Arc<PrincipalPolicy>>,
     hs256_secret: Option<Arc<String>>,
     allowed_algorithms: Arc<HashSet<Algorithm>>,
     /// Default user ID to use (for testing/development) when the token is empty.
@@ -53,6 +55,7 @@ impl UserIdExtractor {
     /// JWKS URL (and no inline JWKS was provided via another constructor).
     pub fn new(auth_config: AuthConfig) -> Result<Self, CommandError> {
         Self::from_parts(auth_config.jwt, None, None)
+            .and_then(Self::require_principal_policy)
             .map(|extractor| extractor.with_mesh(&auth_config.mesh))
     }
 
@@ -93,7 +96,8 @@ impl UserIdExtractor {
         auth_config.jwt.jwks_url = Some(normalize_authority_url(raw_url)?.to_string());
         // Reuse the existing algorithm/secret/client construction unchanged.
         // This cache has not escaped and polling has not started.
-        let extractor = Self::from_parts(auth_config.jwt, None, None)?;
+        let extractor =
+            Self::from_parts(auth_config.jwt, None, None)?.require_principal_policy()?;
         let cache = extractor.jwks.as_ref().ok_or_else(|| {
             CommandError::authentication("invalid_jwt_config", "Seed requires RS256 verification")
         })?;
@@ -114,6 +118,32 @@ impl UserIdExtractor {
         self.gateway_san.as_deref()
     }
 
+    /// Explicitly attach authorization provenance to a verification-only helper.
+    pub fn with_principal_policy(mut self, policy: PrincipalPolicy) -> Result<Self, CommandError> {
+        let policy = PrincipalPolicy::new(
+            policy.platform_issuer,
+            policy.allow_historical_platform_issuer,
+        )
+        .map_err(|e| CommandError::authentication("PRINCIPAL_INVALID", e.to_string()))?;
+        self.principal_policy = Some(Arc::new(policy));
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn principal_policy(&self) -> Option<&Arc<PrincipalPolicy>> {
+        self.principal_policy.as_ref()
+    }
+
+    fn require_principal_policy(self) -> Result<Self, CommandError> {
+        if self.principal_policy.is_none() {
+            return Err(CommandError::authentication(
+                "PRINCIPAL_POLICY_UNAVAILABLE",
+                "Authorization policy is required",
+            ));
+        }
+        Ok(self)
+    }
+
     /// Create a new user ID extractor with a pre-resolved HS256 secret.
     ///
     /// Legacy helper for existing tests — HS256 only, no issuer/audience.
@@ -131,6 +161,7 @@ impl UserIdExtractor {
             ));
         }
         Ok(Self {
+            principal_policy: None,
             hs256_secret: Some(Arc::new(trimmed.to_string())),
             allowed_algorithms: Arc::new(HashSet::from([Algorithm::HS256])),
             default_user_id: None,
@@ -153,6 +184,7 @@ impl UserIdExtractor {
         user_id: Uuid,
     ) -> Result<Self, CommandError> {
         Self::from_parts(auth_config.jwt, Some(user_id), None)
+            .and_then(Self::require_principal_policy)
             .map(|extractor| extractor.with_mesh(&auth_config.mesh))
     }
 
@@ -191,6 +223,7 @@ impl UserIdExtractor {
         jwks_json: impl AsRef<str>,
     ) -> Result<Self, CommandError> {
         Self::from_parts(auth_config.jwt, None, Some(jwks_json.as_ref()))
+            .and_then(Self::require_principal_policy)
             .map(|extractor| extractor.with_mesh(&auth_config.mesh))
     }
 
@@ -199,6 +232,20 @@ impl UserIdExtractor {
         default_user_id: Option<Uuid>,
         inline_jwks: Option<&str>,
     ) -> Result<Self, CommandError> {
+        let principal_policy = match (&jwt.platform_issuer, jwt.allow_historical_platform_issuer) {
+            (None, None) => None,
+            (Some(issuer), Some(historical)) => Some(Arc::new(
+                PrincipalPolicy::new(issuer.clone(), historical).map_err(|e| {
+                    CommandError::authentication("PRINCIPAL_INVALID", e.to_string())
+                })?,
+            )),
+            _ => {
+                return Err(CommandError::authentication(
+                    "PRINCIPAL_POLICY_UNAVAILABLE",
+                    "Authorization policy is incomplete",
+                ))
+            }
+        };
         let has_inline = inline_jwks.is_some();
         let has_url = jwt.jwks_url.as_ref().is_some_and(|u| !u.trim().is_empty());
         let hs256_configured = jwt
@@ -254,6 +301,7 @@ impl UserIdExtractor {
         };
 
         Ok(Self {
+            principal_policy,
             hs256_secret,
             allowed_algorithms: Arc::new(accepted_algorithms),
             default_user_id,
@@ -316,7 +364,18 @@ impl UserIdExtractor {
     ///
     /// Same failure modes as [`Self::extract_principal`].
     pub async fn extract_user_id(&self, token: &str) -> Result<Uuid, CommandError> {
-        Ok(self.extract_principal(token).await?.sub)
+        let principal = self.extract_principal(token).await?;
+        let policy = self.principal_policy.as_ref().ok_or_else(|| {
+            CommandError::authentication(
+                "PRINCIPAL_POLICY_UNAVAILABLE",
+                "Authorization policy is required",
+            )
+        })?;
+        let principal = PrincipalRef::new(principal.iss, principal.sub)
+            .map_err(|e| CommandError::authentication("PRINCIPAL_INVALID", e.to_string()))?;
+        policy
+            .platform_user_id(&principal)
+            .map_err(|e| CommandError::authentication("PRINCIPAL_INCOMPATIBLE", e.to_string()))
     }
 
     fn verify_hs256(&self, token: &str, _header: &Header) -> Result<JwtPrincipal, CommandError> {

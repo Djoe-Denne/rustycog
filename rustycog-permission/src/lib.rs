@@ -12,6 +12,7 @@
 pub use crate::rustycog_config::OpenFgaClientConfig;
 use crate::rustycog_core::error::DomainError;
 use async_trait::async_trait;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -170,14 +171,102 @@ impl std::fmt::Display for ResourceId {
 /// Anonymous routes can hand a `Subject::wildcard()` to the checker
 /// instead of failing closed, so a public-read tuple like
 /// `project:{id}#viewer@user:*` is honored.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SubjectKind {
-    User,
+    #[serde(alias = "User")]
+    LegacyPlatform,
+    Principal(PrincipalRef),
     Wildcard,
 }
 
 const fn default_subject_kind() -> SubjectKind {
-    SubjectKind::User
+    SubjectKind::LegacyPlatform
+}
+
+/// Exact, verified identity. Deserialization validates the issuer, never normalizes it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "PrincipalRefWire")]
+pub struct PrincipalRef {
+    pub issuer: String,
+    pub subject: Uuid,
+}
+
+#[derive(Deserialize)]
+struct PrincipalRefWire {
+    issuer: String,
+    subject: Uuid,
+}
+
+impl TryFrom<PrincipalRefWire> for PrincipalRef {
+    type Error = PrincipalError;
+    fn try_from(value: PrincipalRefWire) -> Result<Self, Self::Error> {
+        Self::new(value.issuer, value.subject)
+    }
+}
+
+/// Stable internal refusal codes; never includes an issuer or token in diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PrincipalError {
+    #[error("PRINCIPAL_INVALID")]
+    Invalid,
+    #[error("PRINCIPAL_INCOMPATIBLE")]
+    Incompatible,
+    #[error("PRINCIPAL_POLICY_UNAVAILABLE")]
+    PolicyUnavailable,
+}
+
+impl PrincipalRef {
+    pub fn new(issuer: impl Into<String>, subject: Uuid) -> Result<Self, PrincipalError> {
+        let principal = Self {
+            issuer: issuer.into(),
+            subject,
+        };
+        principal.validate()?;
+        Ok(principal)
+    }
+
+    pub fn validate(&self) -> Result<(), PrincipalError> {
+        if self.issuer.is_empty() || self.issuer.len() > 256 || self.issuer.trim() != self.issuer {
+            return Err(PrincipalError::Invalid);
+        }
+        Ok(())
+    }
+}
+
+/// Deployment-pinned platform provenance, independent of the JWT algorithm/Host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrincipalPolicy {
+    pub platform_issuer: String,
+    pub allow_historical_platform_issuer: bool,
+}
+
+impl PrincipalPolicy {
+    pub fn new(
+        platform_issuer: impl Into<String>,
+        allow_historical_platform_issuer: bool,
+    ) -> Result<Self, PrincipalError> {
+        let policy = Self {
+            platform_issuer: platform_issuer.into(),
+            allow_historical_platform_issuer,
+        };
+        PrincipalRef::new(policy.platform_issuer.clone(), Uuid::nil())?;
+        Ok(policy)
+    }
+
+    pub fn is_platform(&self, principal: &PrincipalRef) -> Result<bool, PrincipalError> {
+        principal.validate()?;
+        PrincipalRef::new(self.platform_issuer.clone(), Uuid::nil())?;
+        Ok(principal.issuer == self.platform_issuer
+            || (self.allow_historical_platform_issuer && principal.issuer == "iamrusty"))
+    }
+
+    pub fn platform_user_id(&self, principal: &PrincipalRef) -> Result<Uuid, PrincipalError> {
+        if self.is_platform(principal)? {
+            Ok(principal.subject)
+        } else {
+            Err(PrincipalError::Incompatible)
+        }
+    }
 }
 
 /// Caller identified on the request — either an authenticated user
@@ -189,13 +278,15 @@ const fn default_subject_kind() -> SubjectKind {
 /// only meaningful when the `OpenFGA` model declares the relevant relation
 /// with a `[user, user:*]` type restriction (e.g. `project.viewer` in
 /// `openfga/model.fga`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Subject {
     pub user_id: Uuid,
     /// Defaults to `SubjectKind::User` so payloads serialized before this
     /// field existed deserialize unchanged.
     #[serde(default = "default_subject_kind")]
     pub kind: SubjectKind,
+    #[serde(default)]
+    platform_compatible: bool,
 }
 
 impl Subject {
@@ -204,8 +295,22 @@ impl Subject {
     pub const fn new(user_id: Uuid) -> Self {
         Self {
             user_id,
-            kind: SubjectKind::User,
+            kind: SubjectKind::LegacyPlatform,
+            platform_compatible: true,
         }
+    }
+
+    /// Preserve the exact authority even when its wire identity is proven platform.
+    pub fn from_principal(
+        principal: PrincipalRef,
+        policy: &PrincipalPolicy,
+    ) -> Result<Self, PrincipalError> {
+        let platform_compatible = policy.is_platform(&principal)?;
+        Ok(Self {
+            user_id: principal.subject,
+            kind: SubjectKind::Principal(principal),
+            platform_compatible,
+        })
     }
 
     /// Build the wildcard "any user" subject. Renders as `user:*` on the
@@ -217,6 +322,7 @@ impl Subject {
         Self {
             user_id: Uuid::nil(),
             kind: SubjectKind::Wildcard,
+            platform_compatible: false,
         }
     }
 
@@ -229,9 +335,18 @@ impl Subject {
 
 impl std::fmt::Display for Subject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.kind {
+        match &self.kind {
             SubjectKind::Wildcard => write!(f, "user:*"),
-            SubjectKind::User => write!(f, "user:{}", self.user_id),
+            SubjectKind::LegacyPlatform => write!(f, "user:{}", self.user_id),
+            SubjectKind::Principal(principal) if self.platform_compatible => {
+                write!(f, "user:{}", principal.subject)
+            }
+            SubjectKind::Principal(principal) => write!(
+                f,
+                "user:p1.{}.{}",
+                URL_SAFE_NO_PAD.encode(principal.issuer.as_bytes()),
+                principal.subject
+            ),
         }
     }
 }
@@ -290,6 +405,82 @@ mod subject_tests {
     use super::*;
 
     #[test]
+    fn qualified_principal_encoding_preserves_utf8_and_size_bound() {
+        let policy = PrincipalPolicy::new("https://platform.example/iam", false).unwrap();
+        let id = Uuid::new_v4();
+        for issuer in [
+            "x".to_string(),
+            "a".repeat(256),
+            "é".repeat(128),
+            "https://idp.example/é/iam".to_string(),
+        ] {
+            let subject =
+                Subject::from_principal(PrincipalRef::new(issuer.clone(), id).unwrap(), &policy)
+                    .unwrap();
+            let wire = subject.to_string();
+            assert!(wire.len() <= 387, "API fixture accepts at most 512 bytes");
+            let encoded = wire
+                .strip_prefix("user:p1.")
+                .unwrap()
+                .split('.')
+                .next()
+                .unwrap();
+            assert_eq!(URL_SAFE_NO_PAD.decode(encoded).unwrap(), issuer.as_bytes());
+            assert!(wire.ends_with(&id.to_string()));
+        }
+        for issuer in [
+            String::new(),
+            "a".repeat(257),
+            format!("{}x", "é".repeat(128)),
+            " padded".to_string(),
+            "padded ".to_string(),
+        ] {
+            assert_eq!(PrincipalRef::new(issuer, id), Err(PrincipalError::Invalid));
+        }
+    }
+
+    #[test]
+    fn legacy_platform_grants_require_provenance() {
+        let id = Uuid::new_v4();
+        let policy = PrincipalPolicy::new("https://platform.example/iam", false).unwrap();
+        let platform = Subject::from_principal(
+            PrincipalRef::new(&policy.platform_issuer, id).unwrap(),
+            &policy,
+        )
+        .unwrap();
+        assert_eq!(platform.to_string(), Subject::new(id).to_string());
+        assert_ne!(
+            platform,
+            Subject::new(id),
+            "cache keys retain principal kind and authority"
+        );
+        for issuer in [
+            "iamrusty",
+            "https://unrelated.example/iam",
+            "https://platform.example/iam/",
+        ] {
+            let principal = PrincipalRef::new(issuer, id).unwrap();
+            assert_eq!(
+                policy.platform_user_id(&principal),
+                Err(PrincipalError::Incompatible)
+            );
+            assert!(Subject::from_principal(principal, &policy)
+                .unwrap()
+                .to_string()
+                .starts_with("user:p1."));
+        }
+        let historical_policy = PrincipalPolicy::new(&policy.platform_issuer, true).unwrap();
+        let historical = PrincipalRef::new("iamrusty", id).unwrap();
+        assert_eq!(historical_policy.platform_user_id(&historical).unwrap(), id);
+        assert_eq!(
+            Subject::from_principal(historical, &historical_policy)
+                .unwrap()
+                .to_string(),
+            Subject::new(id).to_string()
+        );
+    }
+
+    #[test]
     fn user_subject_renders_as_user_uuid() {
         let id = Uuid::parse_str("01010101-0101-0101-0101-010101010101").unwrap();
         let subject = Subject::new(id);
@@ -313,7 +504,7 @@ mod subject_tests {
         // `user_id`; `#[serde(default)]` on `kind` keeps them readable.
         let json = r#"{"user_id":"01010101-0101-0101-0101-010101010101"}"#;
         let subject: Subject = serde_json::from_str(json).expect("legacy payload should parse");
-        assert!(matches!(subject.kind, SubjectKind::User));
+        assert!(matches!(subject.kind, SubjectKind::LegacyPlatform));
         assert_eq!(
             subject.to_string(),
             "user:01010101-0101-0101-0101-010101010101"

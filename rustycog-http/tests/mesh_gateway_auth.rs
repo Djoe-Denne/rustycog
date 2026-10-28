@@ -106,6 +106,8 @@ fn ephemeral_port() -> u16 {
 fn extractor(gateway_san: &str) -> Arc<UserIdExtractor> {
     let auth = AuthConfig {
         jwt: JwtAuthConfig {
+            platform_issuer: Some(ISSUER.into()),
+            allow_historical_platform_issuer: Some(false),
             audience: Some("aiforall".into()),
             jwks_url: Some("http://127.0.0.1:9/iam/.well-known/jwks.json".into()),
             ..JwtAuthConfig::default()

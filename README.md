@@ -8,6 +8,31 @@ RustyCog provides one runtime package, `rustycog-framework`, that handles common
 
 The historical `rustycog-*` crate names now describe module/reference boundaries inside the unified runtime package. Integration-test helpers are included in the same package behind the `testing` feature and exposed as `rustycog::testing`.
 
+## Startup secrets (optional `secrets` feature)
+
+`rustycog::config::secrets` provides `SecretReference`, opaque `SecretValue`, the
+async `SecretResolver` port and `OpenBaoKv2Resolver`. Enable `features = ["secrets"]`
+explicitly; neither `default` nor `full` enables network secret resolution.
+`load_config_fresh_strict::<T>()` is an additive, declarative config loader that
+returns a sanitized error instead of falling back to defaults. Legacy loaders
+are unchanged. No config loader contacts OpenBao.
+
+Call `OpenBaoKv2Resolver::connect(&config).await`, then `resolve(&reference).await`
+in the service composition root. `OpenBaoConfig` requires an HTTPS origin and
+`auth = { method = "token_file", path = "/run/secrets/app.bao-token" }`.
+The application always needs a bootstrap identity: a workload agent can supply
+the file, or an operator can issue a scoped, non-root token. Mandatory
+`auth/token/lookup-self` rejects root policies and remaining TTL outside 1–3600 s.
+Policies must grant read on lookup-self and the exact `<mount>/data/<path>` paths;
+the SDK cannot attest that custom policies grant no other rights. File ACLs and
+token issuance are external responsibilities. No ambient token, proxy, redirect,
+retry, renewal or hot rotation is used. HTTP requires `allow_loopback_http = true`
+and a literal loopback IP; TLS verification cannot be disabled. Optional
+`ca_cert_file` adds trusted PEM roots. Each request is limited to 5 s / 64 KiB;
+secret values to 16 KiB. Secrets/errors/Debug are redacted, not guaranteed to be
+zeroized from all HTTP/JSON/client allocations. Transfer values only to their
+consumers and drop the resolver after startup. Vault updates require restart.
+
 ## Features
 
 ### 🎯 **Core Abstractions**

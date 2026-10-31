@@ -12,6 +12,13 @@ use tracing::debug;
 pub use config::{Config, ConfigError, Environment, File, FileFormat};
 pub use dotenvy::dotenv;
 
+/// Optional startup secret resolution; never invoked by configuration loading.
+#[cfg(feature = "secrets")]
+pub mod secrets;
+
+#[cfg(test)]
+mod strict_tests;
+
 /// Server configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -1327,6 +1334,19 @@ where
             Ok(T::create_default())
         }
     }
+}
+
+/// Load configuration without caching, fallback, network I/O or raw diagnostics.
+///
+/// # Errors
+/// Returns a constant, sanitized error on source or deserialization failure.
+pub fn load_config_fresh_strict<T>() -> Result<T, ConfigError>
+where
+    T: ConfigLoader<T>,
+{
+    build_config_with_env_prefix(T::config_prefix())
+        .and_then(Config::try_deserialize::<T>)
+        .map_err(|_| ConfigError::Message("Invalid configuration".to_owned()))
 }
 
 /// Helper function to build configuration with environment prefix

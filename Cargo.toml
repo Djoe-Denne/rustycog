@@ -55,6 +55,7 @@ config = [
     "dep:tracing-subscriber",
     "dep:url",
 ]
+secrets = ["config", "dep:async-trait", "dep:reqwest", "dep:serde_json", "dep:thiserror", "dep:tokio", "tokio/fs", "tokio/io-util"]
 command = [
     "core",
     "config",
@@ -255,6 +256,7 @@ path = "rustycog-http/tests/mesh_gateway_auth.rs"
 required-features = ["http"]
 
 [dev-dependencies]
+wiremock = "0.6"
 claims = "0.8"
 mockall = "0.13"
 rcgen = "0.13"

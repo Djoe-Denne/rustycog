@@ -372,6 +372,8 @@ async fn seeded_distinct_issuers_dispatch_without_http_and_preserve_mesh_and_org
         .unwrap();
     let mut auth = AuthConfig {
         jwt: JwtAuthConfig {
+            platform_issuer: Some(TEST_PLATFORM_ISSUER.into()),
+            allow_historical_platform_issuer: Some(true),
             allowed_algorithms: vec!["RS256".into(), "HS256".into()],
             hs256_secret: Some(TEST_HS256_SECRET.into()),
             jwks_url: Some(server.uri()),
@@ -447,6 +449,8 @@ async fn distinct_platform_issuer_is_checked_after_live_replacement_not_only_at_
             .unwrap();
         let auth = AuthConfig {
             jwt: JwtAuthConfig {
+                platform_issuer: Some(TEST_PLATFORM_ISSUER.into()),
+                allow_historical_platform_issuer: Some(true),
                 allowed_algorithms: vec!["RS256".into(), "HS256".into()],
                 hs256_secret: Some(TEST_HS256_SECRET.into()),
                 jwks_url: Some(server.uri()),
@@ -490,6 +494,8 @@ async fn explicit_seed_rs256_only_and_existing_hs256_only_remain_isolated() {
     let rs = UserIdExtractor::from_config_with_seeded_jwks_and_platform_issuer(
         AuthConfig {
             jwt: JwtAuthConfig {
+                platform_issuer: Some(TEST_PLATFORM_ISSUER.into()),
+                allow_historical_platform_issuer: Some(false),
                 allowed_algorithms: vec!["RS256".into()],
                 jwks_url: Some(server.uri()),
                 audience: Some(TEST_JWT_AUDIENCE.into()),
@@ -503,6 +509,8 @@ async fn explicit_seed_rs256_only_and_existing_hs256_only_remain_isolated() {
     .unwrap();
     let hs = UserIdExtractor::new(AuthConfig {
         jwt: JwtAuthConfig {
+            platform_issuer: Some(TEST_PLATFORM_ISSUER.into()),
+            allow_historical_platform_issuer: Some(true),
             allowed_algorithms: vec!["HS256".into()],
             hs256_secret: Some(TEST_HS256_SECRET.into()),
             issuer: Some(historical.into()),

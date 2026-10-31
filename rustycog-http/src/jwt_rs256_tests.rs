@@ -339,6 +339,184 @@ async fn seeded_hs256_window_uses_only_its_explicit_independent_secret() {
 }
 
 #[tokio::test]
+async fn seeded_distinct_issuers_dispatch_without_http_and_preserve_mesh_and_org() {
+    let server = wiremock::MockServer::start().await;
+    let historical = "https://historical.example/iam";
+    let owner = Uuid::new_v4();
+    let org_issuer = format!("https://organization.example/iam/orgs/{owner}");
+    let org = CanonicalJwk::organization(&org_issuer, owner);
+    let mut document: serde_json::Value = serde_json::from_str(&test_rs256_jwks_json()).unwrap();
+    let org_document: serde_json::Value = serde_json::from_str(&org.to_jwks_json()).unwrap();
+    document["keys"]
+        .as_array_mut()
+        .unwrap()
+        .push(org_document["keys"][0].clone());
+    let seed = LocalJwksSeed::capture(server.uri(), || async { Ok(document.to_string()) })
+        .await
+        .unwrap();
+    let mut auth = AuthConfig {
+        jwt: JwtAuthConfig {
+            allowed_algorithms: vec!["RS256".into(), "HS256".into()],
+            hs256_secret: Some(TEST_HS256_SECRET.into()),
+            jwks_url: Some(server.uri()),
+            issuer: Some(historical.into()),
+            audience: Some(TEST_JWT_AUDIENCE.into()),
+            ..JwtAuthConfig::default()
+        },
+        ..AuthConfig::default()
+    };
+    auth.mesh.trusted_gateway_san = "spiffe://mesh/gateway".into();
+    let extractor = UserIdExtractor::from_config_with_seeded_jwks_and_platform_issuer(
+        auth,
+        seed,
+        TEST_PLATFORM_ISSUER,
+    )
+    .unwrap();
+    assert_eq!(extractor.gateway_san(), Some("spiffe://mesh/gateway"));
+    assert!(server.received_requests().await.unwrap().is_empty());
+    let user = Uuid::new_v4();
+    let mut claims = valid_claims();
+    claims["sub"] = serde_json::json!(user.to_string());
+    let mut header = Header::new(Algorithm::HS256);
+    header.kid = Some(TEST_RS256_KID.into());
+    for (issuer, accepted) in [(historical, true), (TEST_PLATFORM_ISSUER, false)] {
+        claims["iss"] = serde_json::json!(issuer);
+        let token = jsonwebtoken::encode(
+            &header,
+            &claims,
+            &jsonwebtoken::EncodingKey::from_secret(TEST_HS256_SECRET.as_bytes()),
+        )
+        .unwrap();
+        let result = extractor.extract_principal(&token).await;
+        assert_eq!(result.is_ok(), accepted);
+        if accepted {
+            let principal = result.unwrap();
+            assert_eq!(principal.iss, historical);
+            assert_eq!(principal.sub, user);
+        }
+        let rs = create_rs256_jwt_token_with_issuer(user, issuer);
+        assert_eq!(extractor.extract_principal(&rs).await.is_ok(), !accepted);
+    }
+    claims["iss"] = serde_json::json!(org_issuer);
+    claims["org"] = serde_json::json!(owner.to_string());
+    let principal = extractor
+        .extract_principal(&signed_claims_with_kid(&claims, org.kid()))
+        .await
+        .unwrap();
+    assert_eq!(principal.iss, org.issuer());
+    assert_eq!(principal.org, Some(owner.to_string()));
+    claims["org"] = serde_json::json!(Uuid::new_v4().to_string());
+    assert!(extractor
+        .extract_principal(&signed_claims_with_kid(&claims, org.kid()))
+        .await
+        .is_err());
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn distinct_platform_issuer_is_checked_after_live_replacement_not_only_at_install() {
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+    let historical = "https://historical.example/iam";
+    for (live_issuer, accepted) in [(TEST_PLATFORM_ISSUER, true), (historical, false)] {
+        let server = MockServer::start().await;
+        let mut live: serde_json::Value =
+            serde_json::from_str(&test_rs256_jwks_json_with_iss(live_issuer)).unwrap();
+        live["keys"][0]["kid"] = serde_json::json!("live-platform-key");
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(live.to_string()))
+            .mount(&server)
+            .await;
+        let seed = LocalJwksSeed::capture(server.uri(), || async { Ok(test_rs256_jwks_json()) })
+            .await
+            .unwrap();
+        let auth = AuthConfig {
+            jwt: JwtAuthConfig {
+                allowed_algorithms: vec!["RS256".into(), "HS256".into()],
+                hs256_secret: Some(TEST_HS256_SECRET.into()),
+                jwks_url: Some(server.uri()),
+                issuer: Some(historical.into()),
+                audience: Some(TEST_JWT_AUDIENCE.into()),
+                ..JwtAuthConfig::default()
+            },
+            ..AuthConfig::default()
+        };
+        let extractor = UserIdExtractor::from_config_with_seeded_jwks_and_platform_issuer(
+            auth,
+            seed,
+            TEST_PLATFORM_ISSUER,
+        )
+        .unwrap();
+        assert!(server.received_requests().await.unwrap().is_empty());
+        let mut claims = valid_claims();
+        claims["iss"] = serde_json::json!(live_issuer);
+        // JWT iss matches the live JWK even for H: only the platform P check
+        // can reject that signed token after authoritative replacement.
+        let token = signed_claims_with_kid(&claims, "live-platform-key");
+        assert_eq!(extractor.extract_principal(&token).await.is_ok(), accepted);
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        assert!(
+            extractor
+                .extract_principal(&create_rs256_jwt_token(Uuid::new_v4()))
+                .await
+                .is_err(),
+            "live replacement must not union with the seed"
+        );
+    }
+}
+
+#[tokio::test]
+async fn explicit_seed_rs256_only_and_existing_hs256_only_remain_isolated() {
+    let server = wiremock::MockServer::start().await;
+    let historical = "https://historical.example/iam";
+    let seed = LocalJwksSeed::capture(server.uri(), || async { Ok(test_rs256_jwks_json()) })
+        .await
+        .unwrap();
+    let rs = UserIdExtractor::from_config_with_seeded_jwks_and_platform_issuer(
+        AuthConfig {
+            jwt: JwtAuthConfig {
+                allowed_algorithms: vec!["RS256".into()],
+                jwks_url: Some(server.uri()),
+                audience: Some(TEST_JWT_AUDIENCE.into()),
+                ..JwtAuthConfig::default()
+            },
+            ..AuthConfig::default()
+        },
+        seed,
+        TEST_PLATFORM_ISSUER,
+    )
+    .unwrap();
+    let hs = UserIdExtractor::new(AuthConfig {
+        jwt: JwtAuthConfig {
+            allowed_algorithms: vec!["HS256".into()],
+            hs256_secret: Some(TEST_HS256_SECRET.into()),
+            issuer: Some(historical.into()),
+            audience: Some(TEST_JWT_AUDIENCE.into()),
+            ..JwtAuthConfig::default()
+        },
+        ..AuthConfig::default()
+    })
+    .unwrap();
+    let user = Uuid::new_v4();
+    let rs_token = create_rs256_jwt_token(user);
+    assert_eq!(rs.extract_principal(&rs_token).await.unwrap().sub, user);
+    assert!(hs.extract_principal(&rs_token).await.is_err());
+    let mut claims = valid_claims();
+    claims["sub"] = serde_json::json!(user.to_string());
+    for (issuer, accepted) in [(historical, true), (TEST_PLATFORM_ISSUER, false)] {
+        claims["iss"] = serde_json::json!(issuer);
+        let token = jsonwebtoken::encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &jsonwebtoken::EncodingKey::from_secret(TEST_HS256_SECRET.as_bytes()),
+        )
+        .unwrap();
+        assert_eq!(hs.extract_principal(&token).await.is_ok(), accepted);
+        assert!(rs.extract_principal(&token).await.is_err());
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn seeded_organization_issuer_and_owner_are_preserved_not_platform_rewritten() {
     let server = wiremock::MockServer::start().await;
     let owner = Uuid::new_v4();

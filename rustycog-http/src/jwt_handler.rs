@@ -37,6 +37,8 @@ pub struct UserIdExtractor {
     default_user_id: Option<Uuid>,
     /// Optional expected issuer — applied only on the HS256 path.
     hs256_issuer: Option<String>,
+    /// Optional expected issuer for platform RS256 keys, never organization keys.
+    platform_rs256_issuer: Option<String>,
     audience: Option<String>,
     jwks: Option<Arc<JwksCache>>,
     /// Mesh mode: SAN of the gateway whose `x-principal-*` headers are trusted.
@@ -75,10 +77,38 @@ impl UserIdExtractor {
     /// inconsistent platform issuer, or seed age >=60 seconds. No inline or
     /// bootstrap fallback is installed on failure.
     pub fn from_config_with_seeded_jwks(
-        mut auth_config: AuthConfig,
+        auth_config: AuthConfig,
         seed: LocalJwksSeed,
     ) -> Result<Self, CommandError> {
         let issuer = trim_opt(auth_config.jwt.issuer.clone()).ok_or_else(|| {
+            CommandError::authentication("invalid_jwt_config", "Seed requires a platform issuer")
+        })?;
+        Self::from_config_with_seeded_jwks_and_platform_issuer(auth_config, seed, &issuer)
+    }
+
+    /// Build a seeded URL-backed verifier with distinct platform and HMAC issuers.
+    ///
+    /// `platform_issuer` must come from trusted configuration, not JWT/JWK data
+    /// or the JWKS URL. It controls platform seed installation and RS256 token
+    /// verification. `auth_config.jwt.issuer` remains the HS256 issuer; neither
+    /// issuer overrides organization JWK issuer/owner bindings. All seed age,
+    /// live replacement, algorithm, secret, audience and mesh rules of
+    /// [`Self::from_config_with_seeded_jwks`] remain unchanged, with no boot HTTP.
+    /// When the resolved algorithm allowlist includes HS256, its configured
+    /// issuer must be explicitly nonempty, independently of `platform_issuer`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError`] for the same seed/configuration errors as
+    /// [`Self::from_config_with_seeded_jwks`], except the required platform
+    /// issuer is supplied separately and must be nonempty after trimming.
+    /// Also rejects an absent/blank HS256 issuer when HS256 is allowed.
+    pub fn from_config_with_seeded_jwks_and_platform_issuer(
+        mut auth_config: AuthConfig,
+        seed: LocalJwksSeed,
+        platform_issuer: &str,
+    ) -> Result<Self, CommandError> {
+        let issuer = trim_opt(Some(platform_issuer.to_string())).ok_or_else(|| {
             CommandError::authentication("invalid_jwt_config", "Seed requires a platform issuer")
         })?;
         if trim_opt(auth_config.jwt.audience.clone()).is_none() {
@@ -93,11 +123,20 @@ impl UserIdExtractor {
         auth_config.jwt.jwks_url = Some(normalize_authority_url(raw_url)?.to_string());
         // Reuse the existing algorithm/secret/client construction unchanged.
         // This cache has not escaped and polling has not started.
-        let extractor = Self::from_parts(auth_config.jwt, None, None)?;
+        let mut extractor = Self::from_parts(auth_config.jwt, None, None)?;
+        if extractor.allowed_algorithms.contains(&Algorithm::HS256)
+            && extractor.hs256_issuer.is_none()
+        {
+            return Err(CommandError::authentication(
+                "invalid_jwt_config",
+                "Seed with HS256 verification requires an explicit HS256 issuer",
+            ));
+        }
         let cache = extractor.jwks.as_ref().ok_or_else(|| {
             CommandError::authentication("invalid_jwt_config", "Seed requires RS256 verification")
         })?;
         cache.install_local_seed(seed, &issuer)?;
+        extractor.platform_rs256_issuer = Some(issuer);
         Ok(extractor.with_mesh(&auth_config.mesh))
     }
 
@@ -135,6 +174,7 @@ impl UserIdExtractor {
             allowed_algorithms: Arc::new(HashSet::from([Algorithm::HS256])),
             default_user_id: None,
             hs256_issuer: None,
+            platform_rs256_issuer: None,
             audience: None,
             jwks: None,
             gateway_san: None,
@@ -256,6 +296,7 @@ impl UserIdExtractor {
             hs256_secret,
             allowed_algorithms: Arc::new(allowed),
             default_user_id,
+            platform_rs256_issuer: trim_opt(jwt.issuer.clone()),
             hs256_issuer: trim_opt(jwt.issuer),
             audience: trim_opt(jwt.audience),
             jwks,
@@ -415,7 +456,7 @@ impl UserIdExtractor {
         }
         if cached.organization_id.is_none()
             && self
-                .hs256_issuer
+                .platform_rs256_issuer
                 .as_deref()
                 .is_some_and(|expected| expected != jwt_iss)
         {

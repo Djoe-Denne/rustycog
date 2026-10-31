@@ -12,6 +12,9 @@ use std::{
 use testcontainers::{ContainerAsync, GenericImage};
 use tokio::task::JoinHandle;
 
+#[path = "fixture_runtime/process_exit.rs"]
+mod process_exit;
+
 type StartResult = Result<OwnedContainer, String>;
 type Task = Arc<Slot>;
 static CONTEXT: OnceLock<Result<Arc<Context>, String>> = OnceLock::new();
@@ -19,7 +22,7 @@ static ATTEMPT: AtomicU64 = AtomicU64::new(0);
 static TASKS: OnceLock<Mutex<Vec<Task>>> = OnceLock::new();
 
 #[derive(Clone)]
-pub(crate) struct Endpoint {
+pub struct Endpoint {
     pub host: String,
 }
 impl Endpoint {
@@ -27,12 +30,9 @@ impl Endpoint {
         if !matches!(mode, "local" | "bridge") {
             return Err("explicit runner mode local|bridge required".into());
         }
+        let fallback_host = (mode == "local").then_some("127.0.0.1");
         let host = host
-            .or(if mode == "local" {
-                Some("127.0.0.1")
-            } else {
-                None
-            })
+            .or(fallback_host)
             .ok_or("bridge runner host required")?;
         if host.is_empty()
             || host.len() > 253
@@ -84,7 +84,7 @@ impl Endpoint {
         url.set_host(Some(&self.host))
             .map_err(|_| "invalid fixture hostname")?;
         url.set_port(Some(port))
-            .map_err(|_| "invalid fixture port")?;
+            .map_err(|()| "invalid fixture port")?;
         Ok(url.to_string())
     }
 }
@@ -132,8 +132,8 @@ impl Context {
             serde_json::to_vec(&record).map_err(|_| "fixture ledger serialization failed")?;
         bytes.push(b'\n');
         file.write_all(&bytes)
-            .and_then(|_| file.flush())
-            .and_then(|_| file.sync_data())
+            .and_then(|()| file.flush())
+            .and_then(|()| file.sync_data())
             .map_err(|_| {
                 self.unknown.store(true, Ordering::SeqCst);
                 tracing::error!(
@@ -199,10 +199,47 @@ fn context() -> Result<Arc<Context>, String> {
         })
         .clone()
 }
-pub(crate) fn endpoint() -> Result<Endpoint, String> {
+pub fn endpoint() -> Result<Endpoint, String> {
     Ok(context()?.endpoint.clone())
 }
-pub(crate) fn take_unshared<T>(singleton: &mut Option<Arc<T>>) -> Result<Option<T>, Arc<T>> {
+
+/// Start a service-local testcontainer with supervised creation and exit stop.
+///
+/// Pass the unpolled `image.start()` future and the exact name configured on
+/// that image. The guard is armed before creation. The ID comes from the
+/// returned handle, never a name/inventory lookup. Creation, readiness and
+/// explicit removal use the same ledger and ownership model as shared fixtures.
+/// The exit guard only stops, and never removes, remaining enrolled IDs.
+///
+/// On Windows `std::process::exit` bypasses CRT exit callbacks. Abort/forced
+/// termination also cannot run the guard. The campaign runner must therefore
+/// reconcile creation ledgers with Docker Engine and stop remaining owned IDs
+/// in its `finally` on success and failure; this guard does not replace that.
+///
+/// # Errors
+/// Returns an error for invalid runner/ledger configuration, collisions, an
+/// unavailable guard or a failed creation. Do not ignore errors.
+pub async fn start_service_testcontainer<F>(
+    create: F,
+    role: &str,
+    name: &str,
+    port: u16,
+) -> Result<OwnedContainer, String>
+where
+    F: Future<
+            Output = Result<
+                ContainerAsync<GenericImage>,
+                testcontainers::core::error::TestcontainersError,
+            >,
+        > + Send
+        + 'static,
+{
+    Attempt::prepare_named(role, port, Some(name))
+        .await?
+        .start(create)
+        .await
+}
+pub fn take_unshared<T>(singleton: &mut Option<Arc<T>>) -> Result<Option<T>, Arc<T>> {
     let Some(arc) = singleton.take() else {
         return Ok(None);
     };
@@ -259,7 +296,7 @@ fn check_collision(inventory: &Inventory, name: &str, port: u16) -> Result<(), S
     }
     Ok(())
 }
-pub(crate) struct Attempt {
+pub struct Attempt {
     context: Arc<Context>,
     number: u64,
     role: String,
@@ -268,8 +305,13 @@ pub(crate) struct Attempt {
 }
 impl Attempt {
     pub async fn prepare(role: &str, port: u16) -> Result<Self, String> {
+        Self::prepare_named(role, port, None).await
+    }
+
+    async fn prepare_named(role: &str, port: u16, name: Option<&str>) -> Result<Self, String> {
         let context = context()?;
         context.endpoint.authority(port)?;
+        process_exit::arm()?;
         if role.is_empty()
             || role.len() > 24
             || !role.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
@@ -280,7 +322,19 @@ impl Attempt {
         if number >= 128 {
             return Err("fixture attempt limit reached".into());
         }
-        let name = format!("{role}-{}-{}-{number}", context.run, std::process::id());
+        let name = if let Some(name) = name {
+            if name.is_empty()
+                || name.len() > 128
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+            {
+                return Err("invalid service-local fixture name".into());
+            }
+            name.to_string()
+        } else {
+            format!("{role}-{}-{}-{number}", context.run, std::process::id())
+        };
         let docker = testcontainers::core::client::docker_client_instance()
             .await
             .map_err(|_| "Docker inventory client unavailable")?;
@@ -385,45 +439,44 @@ impl Attempt {
                 .lock()
                 .map_err(|_| "fixture supervisor lock poisoned")?;
             let task = tokio::spawn(async move {
-                match create.await {
-                    Ok(container) => {
-                        let id = container.id().to_string();
-                        if id.is_empty() {
-                            self.context.unknown(
-                                self.number,
-                                &self.role,
-                                &self.name,
-                                "unknown_empty_id",
-                                self.port,
-                            );
-                            return Err("fixture returned no ID; cleanup INCONCLUSIVE".into());
-                        }
-                        let owned = OwnedContainer {
-                            container: Some(container),
-                            attempt: self,
-                            id,
-                            removed_confirmed: false,
-                        };
-                        owned.attempt.context.event(
-                            owned.attempt.number,
-                            &owned.attempt.role,
-                            &owned.attempt.name,
-                            Some(&owned.id),
-                            "created",
-                            owned.attempt.port,
-                        )?;
-                        Ok(owned)
-                    }
-                    Err(_) => {
+                if let Ok(container) = create.await {
+                    let id = container.id().to_string();
+                    if id.is_empty() {
                         self.context.unknown(
                             self.number,
                             &self.role,
                             &self.name,
-                            "unknown_opaque_start_failure",
+                            "unknown_empty_id",
                             self.port,
                         );
-                        Err("opaque fixture start failure; identity UNKNOWN".into())
+                        return Err("fixture returned no ID; cleanup INCONCLUSIVE".into());
                     }
+                    let exit_record = process_exit::track(&self, &id)?;
+                    let owned = OwnedContainer {
+                        container: Some(container),
+                        attempt: self,
+                        id,
+                        removed_confirmed: false,
+                        exit_record,
+                    };
+                    owned.attempt.context.event(
+                        owned.attempt.number,
+                        &owned.attempt.role,
+                        &owned.attempt.name,
+                        Some(&owned.id),
+                        "created",
+                        owned.attempt.port,
+                    )?;
+                    Ok(owned)
+                } else {
+                    self.context.unknown(
+                        self.number,
+                        &self.role,
+                        &self.name,
+                        "unknown_opaque_start_failure",
+                        self.port,
+                    );
+                    Err("opaque fixture start failure; identity UNKNOWN".into())
                 }
             });
             *slot
@@ -482,6 +535,7 @@ async fn await_retained<T>(
     };
     let result = task.await;
     guard.take();
+    drop(guard);
     result.map(Some)
 }
 async fn join_slot(slot: &Slot) -> StartResult {
@@ -633,19 +687,40 @@ pub async fn join_fixture_creations() -> Result<(), String> {
     }
 }
 
-pub(crate) struct OwnedContainer {
+// An exit stop is not a successful join of creations running on a test reactor.
+// Do not await those tasks from the guard's separate runtime or invent IDs.
+fn process_exit_creations_unresolved() -> bool {
+    let Some(tasks) = TASKS.get() else {
+        return false;
+    };
+    let Ok(tasks) = tasks.try_lock() else {
+        return true;
+    };
+    let mut unresolved = false;
+    for slot in tasks.iter() {
+        let pending = slot.active.load(Ordering::SeqCst)
+            || slot.task.try_lock().map_or(true, |task| task.is_some())
+            || slot.teardown.try_lock().map_or(true, |task| task.is_some());
+        if pending {
+            slot.context.unknown(
+                slot.number,
+                &slot.role,
+                &slot.name,
+                "process_exit_creation_unresolved",
+                slot.port,
+            );
+        }
+        unresolved |= pending || slot.context.unknown.load(Ordering::SeqCst);
+    }
+    unresolved
+}
+
+pub struct OwnedContainer {
     container: Option<ContainerAsync<GenericImage>>,
     attempt: Attempt,
     id: String,
     removed_confirmed: bool,
-}
-impl std::ops::Deref for OwnedContainer {
-    type Target = ContainerAsync<GenericImage>;
-    fn deref(&self) -> &Self::Target {
-        self.container
-            .as_ref()
-            .expect("owned container exists until consuming teardown")
-    }
+    exit_record: Arc<process_exit::Record>,
 }
 impl OwnedContainer {
     pub async fn mapped_port(
@@ -653,6 +728,9 @@ impl OwnedContainer {
         internal: testcontainers::core::ContainerPort,
     ) -> Result<u16, String> {
         let port = self
+            .container
+            .as_ref()
+            .ok_or("owned container exists until consuming teardown")?
             .get_host_port_ipv4(internal)
             .await
             .map_err(|_| "cannot obtain daemon-mapped fixture port".to_string())?;
@@ -691,8 +769,20 @@ impl OwnedContainer {
             self.attempt.port,
         )
     }
+    pub async fn stop(&self) -> Result<(), String> {
+        self.container
+            .as_ref()
+            .ok_or("owned container exists until consuming teardown")?
+            .stop()
+            .await
+            .map_err(|_| "owned container stop failed".to_string())
+    }
     pub async fn rm(mut self) -> Result<(), String> {
-        ensure_exact_owned_id(&self.id, self.container.as_ref().map(|c| c.id()), false)?;
+        ensure_exact_owned_id(
+            &self.id,
+            self.container.as_ref().map(ContainerAsync::id),
+            false,
+        )?;
         self.attempt.context.event(
             self.attempt.number,
             &self.attempt.role,
@@ -713,6 +803,7 @@ impl OwnedContainer {
             self.attempt.context.unknown.store(true, Ordering::SeqCst);
         } else {
             self.removed_confirmed = true;
+            self.exit_record.removed();
         }
         self.attempt.context.event(
             self.attempt.number,

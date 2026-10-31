@@ -10,7 +10,6 @@ use rustycog::config::{load_config_part, QueueConfig, SqsConfig};
 use rustycog::events::event::DomainEvent;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -21,9 +20,6 @@ use uuid;
 
 /// Global test SQS container instance
 static TEST_SQS_CONTAINER: OnceLock<Arc<Mutex<Option<Arc<TestSqsContainer>>>>> = OnceLock::new();
-
-/// Flag to track if cleanup handler has been registered
-static SQS_CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Test SQS container wrapper
 pub struct TestSqsContainer {
@@ -65,8 +61,8 @@ impl TestSqs {
     ///
     /// # Errors
     ///
-    /// Returns an error if the LocalStack container cannot be started, the SQS
-    /// client cannot be created, LocalStack is not ready, or test queues cannot
+    /// Returns an error if the `LocalStack` container cannot be started, the SQS
+    /// client cannot be created, `LocalStack` is not ready, or test queues cannot
     /// be created.
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let (container, sqs_config) = get_or_create_test_sqs_container().await?;
@@ -646,32 +642,30 @@ impl TestSqs {
     }
 }
 
-/// Get or create the global test SQS container
-#[allow(clippy::significant_drop_tightening)] // Mutex held for the whole init to avoid a second LocalStack start.
-async fn get_or_create_test_sqs_container(
-) -> Result<(Arc<TestSqsContainer>, SqsConfig), Box<dyn std::error::Error>> {
-    let container_mutex = TEST_SQS_CONTAINER.get_or_init(|| Arc::new(Mutex::new(None)));
-
-    let mut container_guard = container_mutex.lock().await;
-
-    if let Some(ref container) = *container_guard {
-        // If container exists, we still need to load the config to return it
-        let queue_config = load_config_part::<QueueConfig>("queue")?;
-        let mut sqs_config = match &queue_config {
-            QueueConfig::Sqs(sqs_config) => sqs_config.clone(),
-            QueueConfig::Kafka(_) => {
-                return Err("Configuration is set to Kafka, but SQS test container requires SQS configuration. Environment variables may not be set correctly.".into());
-            }
-            QueueConfig::Disabled => {
-                return Err("Queue is disabled, but SQS test container requires SQS configuration. Environment variables may not be set correctly.".into());
-            }
-        };
-        sqs_config.host = super::fixture_runtime::endpoint()?.host;
-        sqs_config.port = container.port;
-        sqs_config.endpoint_url = Some(container.endpoint_url.clone());
-        return Ok((container.clone(), sqs_config));
+fn require_test_sqs_config() -> Result<SqsConfig, Box<dyn std::error::Error>> {
+    match load_config_part::<QueueConfig>("queue")? {
+        QueueConfig::Sqs(sqs_config) => Ok(sqs_config),
+        QueueConfig::Kafka(_) => Err(
+            "Configuration is set to Kafka, but SQS test container requires SQS configuration. Environment variables may not be set correctly.".into(),
+        ),
+        QueueConfig::Disabled => Err(
+            "Queue is disabled, but SQS test container requires SQS configuration. Environment variables may not be set correctly.".into(),
+        ),
     }
+}
 
+fn sqs_config_for_container(
+    container: &TestSqsContainer,
+) -> Result<SqsConfig, Box<dyn std::error::Error>> {
+    let mut sqs_config = require_test_sqs_config()?;
+    sqs_config.host = super::fixture_runtime::endpoint()?.host;
+    sqs_config.port = container.port;
+    sqs_config.endpoint_url = Some(container.endpoint_url.clone());
+    Ok(sqs_config)
+}
+
+async fn start_test_sqs_container(
+) -> Result<(Arc<TestSqsContainer>, SqsConfig), Box<dyn std::error::Error>> {
     info!("Creating new SQS LocalStack test container");
 
     // Use only the explicitly classified runner endpoint.
@@ -680,22 +674,9 @@ async fn get_or_create_test_sqs_container(
     // Clear only the SQS port cache to ensure fresh random port generation
     SqsConfig::clear_port_cache();
 
-    // Load configuration to understand SQS settings
-    let queue_config = load_config_part::<QueueConfig>("queue")?;
-    let mut sqs_config = match &queue_config {
-        QueueConfig::Sqs(sqs_config) => sqs_config.clone(),
-        QueueConfig::Kafka(_) => {
-            return Err("Configuration is set to Kafka, but SQS test container requires SQS configuration. Environment variables may not be set correctly.".into());
-        }
-        QueueConfig::Disabled => {
-            return Err("Queue is disabled, but SQS test container requires SQS configuration. Environment variables may not be set correctly.".into());
-        }
-    };
-
-    // Use the configuration's port resolution mechanism
+    let mut sqs_config = require_test_sqs_config()?;
     let sqs_port = sqs_config.actual_port();
 
-    // Create LocalStack container with SQS service
     let attempt = super::fixture_runtime::Attempt::prepare("sqs", sqs_port).await?;
     let localstack_image = GenericImage::new("localstack/localstack", "3.0.2")
         .with_env_var("SERVICES", "sqs")
@@ -704,9 +685,8 @@ async fn get_or_create_test_sqs_container(
         .with_env_var("DOCKER_HOST", "unix:///var/run/docker.sock")
         .with_env_var("HOST_TMP_FOLDER", "/tmp")
         .with_container_name(attempt.name())
-        .with_mapped_port(sqs_port, testcontainers::core::ContainerPort::Tcp(4566)); // LocalStack default port
+        .with_mapped_port(sqs_port, testcontainers::core::ContainerPort::Tcp(4566));
 
-    // Start LocalStack
     info!("Starting LocalStack SQS container on port {}...", sqs_port);
     let sqs_container = attempt.start(localstack_image.start()).await?;
     let sqs_port = sqs_container
@@ -721,27 +701,33 @@ async fn get_or_create_test_sqs_container(
     info!("Test SQS LocalStack container started");
     info!("Endpoint URL: {}", endpoint_url);
 
-    let test_container = Arc::new(TestSqsContainer {
-        container: sqs_container,
-        endpoint_url,
-        port: sqs_port,
-    });
-
-    *container_guard = Some(test_container.clone());
-
-    // Register cleanup handler on first container creation
-    register_sqs_cleanup_handler();
-
-    Ok((test_container, sqs_config))
+    Ok((
+        Arc::new(TestSqsContainer {
+            container: sqs_container,
+            endpoint_url,
+            port: sqs_port,
+        }),
+        sqs_config,
+    ))
 }
 
-/// Register cleanup handler for SQS containers
-fn register_sqs_cleanup_handler() {
-    if SQS_CLEANUP_REGISTERED.swap(true, Ordering::SeqCst) {
-        return;
+/// Get or create the global test SQS container.
+/// Holds the singleton mutex across start so a second LocalStack is not launched.
+async fn get_or_create_test_sqs_container(
+) -> Result<(Arc<TestSqsContainer>, SqsConfig), Box<dyn std::error::Error>> {
+    let container_mutex = TEST_SQS_CONTAINER.get_or_init(|| Arc::new(Mutex::new(None)));
+    let mut container_guard = container_mutex.lock().await;
+
+    if let Some(container) = container_guard.as_ref().cloned() {
+        drop(container_guard);
+        let sqs_config = sqs_config_for_container(&container)?;
+        return Ok((container, sqs_config));
     }
 
-    info!("Registering SQS test container cleanup handler");
+    let (test_container, sqs_config) = start_test_sqs_container().await?;
+    *container_guard = Some(test_container.clone());
+    drop(container_guard);
+    Ok((test_container, sqs_config))
 }
 
 /// Test fixture for SQS integration tests

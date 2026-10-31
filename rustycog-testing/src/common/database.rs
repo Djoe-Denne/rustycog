@@ -9,7 +9,6 @@ use crate::testing::common::ServiceTestDescriptor;
 use rustycog::config::DatabaseConfig;
 use rustycog::db::DbConnectionPool;
 use sea_orm::{Database, DatabaseConnection, DbErr};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
@@ -18,9 +17,6 @@ use tracing::{debug, info, warn};
 
 /// Global test database container instance
 static TEST_CONTAINER: OnceLock<Arc<Mutex<Option<Arc<TestDatabaseContainer>>>>> = OnceLock::new();
-
-/// Flag to track if cleanup handler has been registered
-static CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Test database container wrapper
 pub struct TestDatabaseContainer {
@@ -174,7 +170,7 @@ async fn get_or_create_test_container() -> Result<Arc<TestDatabaseContainer>, Db
     let host_port = container
         .mapped_port(testcontainers::core::ContainerPort::Tcp(5432))
         .await
-        .map_err(|e| DbErr::Custom(e.to_string()))?;
+        .map_err(DbErr::Custom)?;
     let database_url = format!(
         "postgres://{}:{}@{}:{}/{}",
         db_config.creds.username, db_config.creds.password, endpoint.host, host_port, db_config.db
@@ -194,9 +190,6 @@ async fn get_or_create_test_container() -> Result<Arc<TestDatabaseContainer>, Db
     });
 
     *container_guard = Some(test_container.clone());
-
-    // Register cleanup handler on first container creation
-    register_cleanup_handler();
 
     Ok(test_container)
 }
@@ -247,28 +240,6 @@ async fn wait_for_database(database_url: &str) -> Result<(), DbErr> {
     )))
 }
 
-/// Register cleanup handler to stop container when process exits
-fn register_cleanup_handler() {
-    extern "C" fn cleanup_on_exit() {
-        debug!("Process exiting, attempting to cleanup test database container...");
-        // Logging is not cleanup proof. The parent must join creations before
-        // runtime shutdown and verify its exact-ID ledger against Docker.
-    }
-
-    // Only register once
-    if CLEANUP_REGISTERED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
-    info!("Registering test database container cleanup handler");
-
-    // Signals must not infer ownership by a static name or bypass joined cleanup.
-
-    unsafe {
-        libc::atexit(cleanup_on_exit);
-    }
-}
-
 /// Create a base test configuration
 fn create_base_test_config() -> Result<DatabaseConfig, DbErr> {
     // Load configuration from test.toml
@@ -294,8 +265,8 @@ impl TestFixture {
     ///
     /// # Errors
     ///
-    /// Returns an error if OpenFGA is requested but no authorization model is
-    /// provided, or if the OpenFGA, database, or SQS fixtures cannot be created.
+    /// Returns an error if `OpenFGA` is requested but no authorization model is
+    /// provided, or if the `OpenFGA`, database, or `SQS` fixtures cannot be created.
     pub async fn new<D, T>(descriptor: Arc<D>) -> Result<Self, DbErr>
     where
         D: ServiceTestDescriptor<T>,

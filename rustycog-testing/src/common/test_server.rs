@@ -34,9 +34,8 @@ where
     let mut server_guard = server_mutex.lock().await;
     let mut descriptor_type_guard = descriptor_type_mutex.lock().await;
     let descriptor_type = TypeId::of::<D>();
-    let descriptor_changed = descriptor_type_guard
-        .map(|existing| existing != descriptor_type)
-        .unwrap_or(false);
+    let descriptor_changed =
+        descriptor_type_guard.is_some_and(|existing| existing != descriptor_type);
 
     if descriptor_changed {
         if let Some(handle) = server_guard.take() {
@@ -48,7 +47,7 @@ where
     }
 
     // Check if we need to start a new server
-    let needs_new_server = server_guard.as_ref().map_or(true, JoinHandle::is_finished);
+    let needs_new_server = server_guard.as_ref().is_none_or(JoinHandle::is_finished);
 
     let server_config = load_config_part::<ServerConfig>("server")?;
     let server_port = server_config.actual_port();

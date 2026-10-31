@@ -33,7 +33,6 @@ use rustycog::config::{load_config_part, OpenFgaClientConfig};
 use rustycog::permission::{Permission, ResourceRef, Subject};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use testcontainers::{core::ContainerPort, runners::AsyncRunner, GenericImage, ImageExt};
@@ -46,9 +45,6 @@ const OPENFGA_IMAGE_TAG: &str = "v1.5.0";
 /// Global test `OpenFGA` container instance.
 static TEST_OPENFGA_CONTAINER: OnceLock<Arc<Mutex<Option<Arc<TestOpenFgaContainer>>>>> =
     OnceLock::new();
-
-/// One-time guard for the cleanup-handler registration.
-static OPENFGA_CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Test `OpenFGA` container wrapper.
 ///
@@ -314,7 +310,7 @@ impl TestOpenFga {
     ///
     /// # Errors
     ///
-    /// Returns an error if the OpenFGA write HTTP call fails or the store
+    /// Returns an error if the `OpenFGA` write HTTP call fails or the store
     /// rejects the tuple for a reason other than a duplicate.
     pub async fn write_tuple(
         &self,
@@ -363,7 +359,7 @@ impl TestOpenFga {
     ///
     /// # Errors
     ///
-    /// Returns an error if the OpenFGA delete HTTP call fails or the store
+    /// Returns an error if the `OpenFGA` delete HTTP call fails or the store
     /// rejects the delete for a reason other than an unknown tuple.
     pub async fn delete_tuple(
         &self,
@@ -410,7 +406,7 @@ impl TestOpenFga {
     ///
     /// # Errors
     ///
-    /// Returns an error if the OpenFGA read HTTP call fails or the response
+    /// Returns an error if the `OpenFGA` read HTTP call fails or the response
     /// cannot be decoded.
     pub async fn read_tuples(
         &self,
@@ -492,7 +488,7 @@ pub struct TupleKey {
     pub object: String,
 }
 
-/// Map an object type and [`Permission`] to the writable OpenFGA relation.
+/// Map an object type and [`Permission`] to the writable `OpenFGA` relation.
 ///
 /// The returned relation is the one a tuple must be written on so that
 /// `Check(subject, Permission::relation(), object)` succeeds against the
@@ -618,16 +614,7 @@ async fn get_or_create_test_openfga_container(
     *container_guard = Some(test_container.clone());
     drop(container_guard);
 
-    register_openfga_cleanup_handler();
-
     Ok((test_container, base_url, port))
-}
-
-fn register_openfga_cleanup_handler() {
-    if OPENFGA_CLEANUP_REGISTERED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    info!("Registering OpenFGA test container cleanup handler");
 }
 
 /// Poll `GET {base_url}/healthz` until `OpenFGA` reports SERVING. Bounded at

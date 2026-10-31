@@ -41,7 +41,7 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
-    #[must_use]
+    #[must_use = "the computed delay should be applied before retrying"]
     pub fn calculate_delay(&self, attempt: u32) -> Duration {
         let exponent = i32::try_from(attempt).unwrap_or(i32::MAX);
         let factor = self.backoff_multiplier.powi(exponent);
@@ -69,7 +69,7 @@ impl RetryPolicy {
         delay
     }
 
-    #[must_use]
+    #[must_use = "the retry decision should be checked before aborting"]
     pub const fn is_retryable(&self, error: &CommandError) -> bool {
         matches!(
             error,
@@ -288,7 +288,7 @@ impl CommandRegistry {
     }
 
     /// Get a handler for a command type
-    #[must_use]
+    #[must_use = "the handler should be used to execute the command"]
     pub fn get_handler(&self, command_type: &str) -> Option<Arc<dyn DynCommandHandler>> {
         self.handlers.get(command_type).cloned()
     }
@@ -342,18 +342,20 @@ impl CommandRegistry {
         })?;
 
         // Ownership, rather than a cloned payload, prevents replay of consumed proofs.
-        let result = match timeout(
+        let result = timeout(
             self.config.default_timeout,
             self.execute_once(handler, command, context),
         )
         .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(CommandError::timeout(
-                "command_timeout",
-                "Command execution timed out",
-            )),
-        };
+        .map_or_else(
+            |_| {
+                Err(CommandError::timeout(
+                    "command_timeout",
+                    "Command execution timed out",
+                ))
+            },
+            |result| result,
+        );
         let duration = start_time.elapsed();
         if self.config.enable_tracing {
             info!(
@@ -585,22 +587,25 @@ impl CommandRegistry {
             return;
         }
 
-        if let Some(error) = error {
-            warn!(
-                command_type = %command_type,
-                error = %error,
-                retry_attempt = retry_attempts,
-                delay_ms = duration_as_millis_u64(delay),
-                "Command failed, retrying"
-            );
-        } else {
-            warn!(
-                command_type = %command_type,
-                retry_attempt = retry_attempts,
-                delay_ms = duration_as_millis_u64(delay),
-                "Command timed out, retrying"
-            );
-        }
+        error.map_or_else(
+            || {
+                warn!(
+                    command_type = %command_type,
+                    retry_attempt = retry_attempts,
+                    delay_ms = duration_as_millis_u64(delay),
+                    "Command timed out, retrying"
+                );
+            },
+            |error| {
+                warn!(
+                    command_type = %command_type,
+                    error = %error,
+                    retry_attempt = retry_attempts,
+                    delay_ms = duration_as_millis_u64(delay),
+                    "Command failed, retrying"
+                );
+            },
+        );
     }
 
     /// Execute command once without retry logic
@@ -656,7 +661,7 @@ impl CommandRegistry {
     }
 
     /// List all registered command types
-    #[must_use]
+    #[must_use = "the registered command types should be inspected"]
     pub fn list_command_types(&self) -> Vec<String> {
         self.handlers.keys().cloned().collect()
     }

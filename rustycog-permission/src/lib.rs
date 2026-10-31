@@ -22,7 +22,7 @@ pub use checker::{
     OpenFgaPermissionChecker,
 };
 
-/// One stored OpenFGA relationship tuple (`user` / `relation` / `object`).
+/// One stored `OpenFGA` relationship tuple (`user` / `relation` / `object`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RelationshipTuple {
     /// Subject on the wire, e.g. `user:{uuid}` or `organization:{uuid}#member`.
@@ -106,17 +106,17 @@ impl std::fmt::Display for Permission {
     }
 }
 
-impl From<String> for Permission {
+impl TryFrom<String> for Permission {
+    type Error = DomainError;
+
     /// Converts a known permission name.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `s` is not a recognized permission name. Kept as [`From`]
-    /// for existing call sites; prefer [`Permission::from_str`] when the
-    /// input may be invalid.
-    #[allow(clippy::fallible_impl_from)]
-    fn from(s: String) -> Self {
-        Self::from_str(&s).expect("Permission::from requires a known permission name")
+    /// Returns [`DomainError`] if `s` is not `read`, `write`, `admin`, or `owner`.
+    /// Prefer [`Permission::from_str`] for `&str` input.
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::from_str(&s)
     }
 }
 

@@ -30,7 +30,7 @@ pub struct PeerClientCertificate {
     pub der: Vec<u8>,
 }
 
-pub(crate) fn install_crypto_provider() {
+pub fn install_crypto_provider() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
@@ -46,9 +46,7 @@ pub(crate) fn install_crypto_provider() {
 /// Returns an error if the crypto provider cannot be used, the server
 /// certificate/key or client CA PEM cannot be loaded, or rustls rejects the
 /// resulting configuration.
-pub(crate) fn rustls_config_with_client_auth(
-    config: &ServerConfig,
-) -> anyhow::Result<RustlsConfig> {
+pub fn rustls_config_with_client_auth(config: &ServerConfig) -> anyhow::Result<RustlsConfig> {
     install_crypto_provider();
 
     let certs = load_certs(&config.tls_cert_path)?;
@@ -108,12 +106,12 @@ fn load_client_ca_roots(path: &str) -> anyhow::Result<RootCertStore> {
 /// Wraps [`RustlsAcceptor`] so accepted connections inject the peer leaf cert
 /// into request extensions.
 #[derive(Clone)]
-pub(crate) struct PeerClientCertAcceptor {
+pub struct PeerClientCertAcceptor {
     inner: RustlsAcceptor,
 }
 
 impl PeerClientCertAcceptor {
-    pub(crate) fn new(config: RustlsConfig) -> Self {
+    pub fn new(config: RustlsConfig) -> Self {
         Self {
             inner: RustlsAcceptor::new(config),
         }
@@ -158,7 +156,7 @@ fn peer_from_tls_stream<I>(tls_stream: &TlsStream<I>) -> Option<PeerClientCertif
 
 /// Tower service that copies the connection's peer cert into each request.
 #[derive(Clone)]
-pub(crate) struct InjectPeerClientCertService<S> {
+pub struct InjectPeerClientCertService<S> {
     inner: S,
     peer: Option<PeerClientCertificate>,
 }

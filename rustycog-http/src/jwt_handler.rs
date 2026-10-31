@@ -241,16 +241,17 @@ impl UserIdExtractor {
     ) -> Result<Self, CommandError> {
         let has_inline = inline_jwks.is_some();
         let has_url = jwt.jwks_url.as_ref().is_some_and(|u| !u.trim().is_empty());
-        let has_secret = jwt
+        let hs256_configured = jwt
             .hs256_secret
             .as_ref()
             .is_some_and(|s| !s.trim().is_empty());
 
-        let allowed = resolve_allowed_algorithms(&jwt, has_url || has_inline, has_secret)?;
-        let allows_hs256 = allowed.contains(&Algorithm::HS256);
-        let allows_rs256 = allowed.contains(&Algorithm::RS256);
+        let accepted_algorithms =
+            resolve_allowed_algorithms(&jwt, has_url || has_inline, hs256_configured)?;
+        let hmac_enabled = accepted_algorithms.contains(&Algorithm::HS256);
+        let rsa_enabled = accepted_algorithms.contains(&Algorithm::RS256);
 
-        let hs256_secret = if allows_hs256 {
+        let hs256_secret = if hmac_enabled {
             let secret = jwt
                 .hs256_secret
                 .as_ref()
@@ -267,7 +268,7 @@ impl UserIdExtractor {
             None
         };
 
-        let jwks = if allows_rs256 {
+        let jwks_cache = if rsa_enabled {
             if let Some(json) = inline_jwks {
                 Some(JwksCache::from_inline_json(json)?)
             } else if has_url {
@@ -278,7 +279,7 @@ impl UserIdExtractor {
                     )
                 })?;
                 Some(JwksCache::from_url(
-                    url,
+                    &url,
                     jwt.jwks_refresh_interval_secs,
                     jwt.jwks_negative_cache_ttl_secs,
                 )?)
@@ -294,12 +295,12 @@ impl UserIdExtractor {
 
         Ok(Self {
             hs256_secret,
-            allowed_algorithms: Arc::new(allowed),
+            allowed_algorithms: Arc::new(accepted_algorithms),
             default_user_id,
             platform_rs256_issuer: trim_opt(jwt.issuer.clone()),
             hs256_issuer: trim_opt(jwt.issuer),
             audience: trim_opt(jwt.audience),
-            jwks,
+            jwks: jwks_cache,
             gateway_san: None,
         })
     }
@@ -680,7 +681,7 @@ mod jwt_rs256_tests;
 
 #[cfg(test)]
 mod claim_time_tests {
-    use super::*;
+    use super::{validate_claim_times, Algorithm, Validation};
 
     #[test]
     fn optional_nbf_and_iat_use_the_same_bounded_skew() {

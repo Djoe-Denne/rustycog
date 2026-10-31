@@ -11,7 +11,7 @@ const PRINCIPAL_ISS: &str = "x-principal-iss";
 const PRINCIPAL_SUB: &str = "x-principal-sub";
 
 /// Peer must present a client certificate whose DNS SAN is `gateway_san`.
-pub(crate) fn require_gateway_peer(
+pub fn require_gateway_peer(
     peer: Option<&PeerClientCertificate>,
     gateway_san: &str,
 ) -> Result<(), &'static str> {
@@ -26,7 +26,7 @@ pub(crate) fn require_gateway_peer(
 ///
 /// Accepted only when the mTLS peer certificate carries `gateway_san` as a DNS
 /// SAN. The chain itself was already verified by the TLS listener.
-pub(crate) fn gateway_principal(
+pub fn gateway_principal(
     peer: Option<&PeerClientCertificate>,
     headers: &HeaderMap,
     gateway_san: &str,

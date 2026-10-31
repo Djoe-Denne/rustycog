@@ -6,7 +6,8 @@ description: >-
   fight the Cargo target lock. Use when fixing Sonar issues on project
   Djoe-Denne_rustycog, running parallel Clippy/Sonar campaigns, editing
   rustycog-*/src, assigning lots, or when the user mentions unused_async,
-  must_use, .auto-sonar-patcher, Serena wipe, or cargo lock target/.
+  must_use, double_must_use, large_futures, rust:S7493, rust:S2208,
+  secrets:S6706, .auto-sonar-patcher, Serena wipe, or cargo lock target/.
 ---
 
 # rustycog — lots Sonar / Clippy en parallèle
@@ -60,7 +61,11 @@ un fichier = un agent à la fois. Gros fichier (`rustycog-config/src/lib.rs`) : 
 
 ## API
 
-INTERDIT de changer une signature publique sans skill/migration. Préférer docs `# Errors`/`# Panics`, réécriture locale, `expect` documenté, `#[allow(clippy::…)]` justifié, `#[must_use]`. `unused_async` public → allow, pas retirer `async`.
+Une signature publique ne change qu’avec tous ses appelants dans le même lot.
+Depuis le 2026-10-08, `#[allow]` n’est pas un correctif. `unused_async` :
+passer en `fn` s’il n’y a pas de `.await`, et mettre à jour les `.await`.
+Ne pas retirer `async` d’une méthode que des appelants hors lot attendent
+encore (`stop`).
 
 Est **public** tout `pub fn` / `pub async fn` / trait / type / champ `pub`
 réexporté par `rustycog-framework` (modules `command`, `http`, `events`,
@@ -71,19 +76,27 @@ Correctifs sûrs (dans l’ordre) :
 1. Docs rustdoc `# Errors` / `# Panics` (Clippy `missing_errors_doc` /
    `missing_panics_doc`).
 2. Réécriture **locale** (helpers privés, `map_or_else`, `strip_prefix`).
-3. `expect("raison")` + `# Panics` si le panic existait déjà (`unwrap`).
-4. `#[allow(clippy::…)]` **une ligne au-dessus**, commentaire **pourquoi**.
-5. `#[must_use]` sur un builder fluent qui retourne `Self`.
+3. `Result` / `TryFrom` à la place d’un `expect`. `panic!` ne ferme pas `expect_used`.
+4. `#[must_use]` sur un builder fluent qui retourne `Self`, ou
+   `#[must_use = "await the future"]` seulement si l’attribut est **déjà**
+   dans le source. S’il est injecté par `async_trait` 0.1.89 : monter à **0.1.92**
+   (lock du sous-module compris), ne pas ajouter l’attribut.
 
-Interdit sans skill de migration **et** accord opérateur :
+Interdit, même sur un helper privé :
 
-- changer args / type de retour / `async` ↔ sync d’une API publique
-- retirer `async` pour `unused_async` (même si le corps n’await plus)
-- changer un champ `pub` (ex. `version: i32` → `u32`)
-- passer `Result` → panic ou l’inverse sur une `pub fn`
+- `#[allow]` pour fermer une clé
+- `expect` remplacé par `panic!` (`expect_used`)
+- `use super::*` (`rust:S2208`) — imports explicites
+- constante PEM dans le source (`secrets:S6706`) — `OnceLock` + `test_rs256_*_pem()`, et chaque appelant de `TEST_RS256_*_PEM` dans le même changement
+- `#[must_use]` ajouté là où `async_trait` l’injecte (bumper 0.1.92)
+- retirer un `Deref` sans garder les méthodes qui n’existaient que par lui (`OwnedContainer::stop`)
+- `pub` qui élargit vraiment la visibilité (`redundant_pub_crate` : `pub` seulement dans un module déjà privé)
+- retirer `async` d’une API que des appelants hors lot `.await` encore
 
-Les helpers **privés** (`fn foo`, pas `pub`) peuvent perdre `async` ou changer
-de signature. `create_base_test_config` est privé.
+Les helpers privés peuvent perdre `async` ou changer de signature.
+`from_url(&str)` et `spawn_server` synchrone sont des changements de
+signature : les appelants partent dans le même lot. `create_base_test_config`
+est privé.
 
 ## Disque / Serena
 
@@ -100,7 +113,7 @@ Get-PSDrive C | Select-Object Used,Free
 
 ## Build
 
-5 agents en parallèle = **ne pas** lancer `cargo` (lock `target/`). Check une fois les files closes. `cargo check --all-features` peut échouer sur `rdkafka-sys` (clone) : ce n’est pas le code.
+5 agents en parallèle = **ne pas** lancer `cargo` (lock `target/`). Check une fois les files closes, en `-j 1` (`-j 2` OOM LLVM). `cargo check --all-features` peut échouer sur `rdkafka-sys` (clone) : ce n’est pas le code.
 
 Ne pas lancer `cargo test`, `clippy`, ni écrire sous `target/` pendant que
 d’autres lots sont ouverts.
@@ -176,14 +189,20 @@ voir `unused must-use`. Correctif côté service : chaîner
 
 ## Exemple — `unused_async` public
 
+Campagne d’août : `#[allow]` gardait `stop` async. Depuis le 2026-10-08,
+`#[allow]` ne ferme plus une clé. Si des appelants hors lot font encore
+`.await stop()`, l’`async` reste le temps de les migrer. Un helper de test
+sans `.await` (`spawn_server`) passe en `fn` et ses appelants suivent.
+
 ```rust
 /// Request the dispatcher loop to exit.
 ///
 /// # Errors
 ///
 /// This method does not currently fail.
-#[allow(clippy::unused_async)] // Public API stays async so callers can `.await` stop.
 pub async fn stop(&self) -> Result<(), ServiceError> {
+    Ok(())
+}
 ```
 
 ## Exemple — interdit

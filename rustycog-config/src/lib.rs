@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use tracing::debug;
 
 // Re-export config and dotenvy for service use
@@ -59,16 +59,12 @@ impl Default for ServerConfig {
 impl ServerConfig {
     /// Resolve the configured HTTP port. When `port == 0`, pick one free host
     /// port and cache it so the server and test client agree.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn actual_port(&self) -> u16 {
         if self.port == 0 {
             let cache_key = format!("server:{}", self.host);
             let cache = PORT_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
             let random_port = {
-                let mut port_cache = cache.lock().expect("PORT_CACHE mutex poisoned");
+                let mut port_cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(&cached_port) = port_cache.get(&cache_key) {
                     return cached_port;
                 }
@@ -162,16 +158,12 @@ impl DatabaseConfig {
 
     /// Get the actual port being used (resolves random port if needed)
     /// This method caches the resolved port to ensure consistency across calls
-    ///
-    /// # Panics
-    ///
-    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn actual_port(&self) -> u16 {
         if self.port == 0 {
             let cache_key = format!("{}:{}:{}", self.host, self.db, self.creds.username);
             let cache = PORT_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
             {
-                let mut port_cache = cache.lock().expect("PORT_CACHE mutex poisoned");
+                let mut port_cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(&cached_port) = port_cache.get(&cache_key) {
                     return cached_port;
                 }
@@ -231,15 +223,11 @@ impl DatabaseConfig {
     }
 
     /// Clear the port cache (useful for testing)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn clear_port_cache() {
         if let Some(cache) = PORT_CACHE.get() {
             cache
                 .lock()
-                .expect("PORT_CACHE mutex poisoned")
+                .unwrap_or_else(PoisonError::into_inner)
                 .remove(&"db".to_string());
             debug!("DB port cleared from cache");
         }
@@ -316,11 +304,11 @@ pub struct JwtAuthConfig {
     pub jwks_negative_cache_ttl_secs: u64,
 }
 
-fn default_jwks_refresh_interval_secs() -> u64 {
+const fn default_jwks_refresh_interval_secs() -> u64 {
     300
 }
 
-fn default_jwks_negative_cache_ttl_secs() -> u64 {
+const fn default_jwks_negative_cache_ttl_secs() -> u64 {
     30
 }
 
@@ -691,16 +679,12 @@ impl SqsConfig {
 
     /// Get the actual port being used (resolves random port if needed)
     /// This method caches the resolved port to ensure consistency across calls
-    ///
-    /// # Panics
-    ///
-    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn actual_port(&self) -> u16 {
         if self.port == 0 {
             let cache_key = format!("sqs:{}:{}", self.host, self.region);
             let cache = PORT_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
             let random_port = {
-                let mut port_cache = cache.lock().expect("PORT_CACHE mutex poisoned");
+                let mut port_cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(&cached_port) = port_cache.get(&cache_key) {
                     debug!("Using cached SQS port: {}", cached_port);
                     return cached_port;
@@ -761,15 +745,11 @@ impl SqsConfig {
     }
 
     /// Clear the port cache for SQS
-    ///
-    /// # Panics
-    ///
-    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn clear_port_cache() {
         if let Some(cache) = PORT_CACHE.get() {
             cache
                 .lock()
-                .expect("PORT_CACHE mutex poisoned")
+                .unwrap_or_else(PoisonError::into_inner)
                 .remove(&"sqs".to_string());
             debug!("SQS port cleared from cache");
         }
@@ -879,16 +859,12 @@ impl OpenFgaClientConfig {
 
     /// Resolve the configured port. When `port == 0`, picks a random free port
     /// once for this host and caches it for the rest of the process.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn actual_port(&self) -> u16 {
         if self.port == 0 {
             let cache_key = format!("openfga:{}", self.host);
             let cache = PORT_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
             let random_port = {
-                let mut port_cache = cache.lock().expect("PORT_CACHE mutex poisoned");
+                let mut port_cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(&cached_port) = port_cache.get(&cache_key) {
                     debug!("Using cached OpenFGA port: {}", cached_port);
                     return cached_port;
@@ -915,15 +891,11 @@ impl OpenFgaClientConfig {
 
     /// Clear cached random `OpenFGA` ports so the next container start gets a
     /// fresh host port.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn clear_port_cache() {
         if let Some(cache) = PORT_CACHE.get() {
             cache
                 .lock()
-                .expect("PORT_CACHE mutex poisoned")
+                .unwrap_or_else(PoisonError::into_inner)
                 .retain(|key, _| !key.starts_with("openfga:"));
             debug!("OpenFGA port cleared from cache");
         }
@@ -1070,16 +1042,12 @@ impl KafkaConfig {
 
     /// Get the actual port being used (resolves random port if needed)
     /// This method caches the resolved port to ensure consistency across calls
-    ///
-    /// # Panics
-    ///
-    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn actual_port(&self) -> u16 {
         if self.port == 0 {
             let cache_key = format!("kafka:{}:{}", self.host, self.client_id);
             let cache = PORT_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
             {
-                let mut port_cache = cache.lock().expect("PORT_CACHE mutex poisoned");
+                let mut port_cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(&cached_port) = port_cache.get(&cache_key) {
                     debug!("cached_port: {}", cached_port);
                     return cached_port;
@@ -1176,15 +1144,11 @@ impl KafkaConfig {
     }
 
     /// Clear the port cache (useful for testing)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the shared `PORT_CACHE` mutex is poisoned.
     pub fn clear_port_cache() {
         if let Some(cache) = PORT_CACHE.get() {
             cache
                 .lock()
-                .expect("PORT_CACHE mutex poisoned")
+                .unwrap_or_else(PoisonError::into_inner)
                 .remove(&"kafka".to_string());
             debug!("Kafka port cleared from cache");
         }

@@ -299,7 +299,7 @@ impl TestOpenFga {
         resource: ResourceRef,
     ) -> Result<&Self, Box<dyn std::error::Error>> {
         for action in Permission::all() {
-            self.allow(subject, action, resource).await?;
+            self.allow(subject.clone(), action, resource).await?;
         }
         Ok(self)
     }

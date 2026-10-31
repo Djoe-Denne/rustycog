@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     future::Future,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
@@ -183,12 +183,8 @@ fn context() -> Result<Arc<Context>, String> {
             if !dir.is_absolute() || !dir.is_dir() {
                 return Err("ledger directory must already exist and be absolute".into());
             }
-            let path = dir.join(format!("fixture-{run}-{}.jsonl", std::process::id()));
-            let ledger = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-                .map_err(|_| "cannot create exclusive fixture ledger")?;
+            let ledger =
+                create_fixture_ledger(&dir, &run, std::process::id(), uuid::Uuid::new_v4())?;
             Ok(Arc::new(Context {
                 run,
                 endpoint,
@@ -199,6 +195,31 @@ fn context() -> Result<Arc<Context>, String> {
         })
         .clone()
 }
+
+// A parent campaign can retain ledgers after Windows reuses their process IDs.
+// The context chooses its incarnation once; even a UUID collision fails closed.
+fn create_fixture_ledger(
+    dir: &Path,
+    run: &str,
+    pid: u32,
+    incarnation: uuid::Uuid,
+) -> Result<std::fs::File, String> {
+    let path = dir.join(format!(
+        "fixture-{run}-{pid}-{}.jsonl",
+        incarnation.simple()
+    ));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            format!(
+                "cannot create exclusive fixture ledger ({:?})",
+                error.kind()
+            )
+        })
+}
+
 pub fn endpoint() -> Result<Endpoint, String> {
     Ok(context()?.endpoint.clone())
 }
@@ -852,6 +873,119 @@ impl Drop for OwnedContainer {
 mod safety_tests {
     use super::*;
     use testcontainers::bollard::models::{ContainerState, ContainerStateStatusEnum};
+
+    #[test]
+    fn fixture_ledger_new_incarnation_preserves_older_run_pid_ledgers() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = "ledger-incarnation";
+        let pid = std::process::id();
+        let legacy_path = dir.path().join(format!("fixture-{run}-{pid}.jsonl"));
+        let legacy_bytes = b"older process ledger must remain untouched\n";
+        std::fs::write(&legacy_path, legacy_bytes).unwrap();
+        let incarnations = [
+            uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+            uuid::Uuid::from_u128(0x22222222_2222_4222_8222_222222222222),
+        ];
+        let make_context = |ledger| Context {
+            run: run.into(),
+            endpoint: Endpoint::parse("local", None).unwrap(),
+            ledger: Mutex::new(ledger),
+            ids: Mutex::new(HashMap::new()),
+            unknown: AtomicBool::new(false),
+        };
+        let first = make_context(
+            create_fixture_ledger(dir.path(), run, pid, incarnations[0])
+                .expect("new incarnation must not reuse the legacy ledger"),
+        );
+        let first_id = "a".repeat(64);
+        first
+            .event(
+                1,
+                "postgres",
+                "diagnostic-only",
+                Some(&first_id),
+                "created",
+                5432,
+            )
+            .unwrap();
+        let first_path = dir.path().join(format!(
+            "fixture-{run}-{pid}-{}.jsonl",
+            incarnations[0].simple()
+        ));
+        let first_bytes = std::fs::read(&first_path).unwrap();
+        let second = make_context(
+            create_fixture_ledger(dir.path(), run, pid, incarnations[1])
+                .expect("another incarnation must not reuse the earlier ledger"),
+        );
+        let second_id = "b".repeat(64);
+        second
+            .event(
+                1,
+                "postgres",
+                "diagnostic-only",
+                Some(&second_id),
+                "created",
+                5432,
+            )
+            .unwrap();
+        let second_path = dir.path().join(format!(
+            "fixture-{run}-{pid}-{}.jsonl",
+            incarnations[1].simple()
+        ));
+        assert_eq!(std::fs::read(&legacy_path).unwrap(), legacy_bytes);
+        assert_eq!(std::fs::read(&first_path).unwrap(), first_bytes);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
+        for (path, expected_id) in [(first_path, first_id), (second_path, second_id)] {
+            let text = std::fs::read_to_string(path).unwrap();
+            let records: Vec<serde_json::Value> = text
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0]["schema_version"], 1);
+            assert_eq!(records[0]["run_id"], run);
+            assert_eq!(records[0]["process_id"], pid);
+            assert_eq!(records[0]["container_id"], expected_id);
+        }
+    }
+
+    #[test]
+    fn fixture_ledger_same_incarnation_refuses_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let incarnation = uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111);
+        let mut ledger = create_fixture_ledger(dir.path(), "exclusive", 42, incarnation).unwrap();
+        let original = b"preserve existing ledger bytes\n";
+        ledger.write_all(original).unwrap();
+        ledger.sync_data().unwrap();
+        let error = create_fixture_ledger(dir.path(), "exclusive", 42, incarnation).unwrap_err();
+        assert_eq!(
+            error,
+            "cannot create exclusive fixture ledger (AlreadyExists)"
+        );
+        let paths: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), original);
+    }
+
+    #[test]
+    fn fixture_ledger_io_error_reports_only_error_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let private_path = dir.path().join("DO_NOT_DISCLOSE_LEDGER_DIRECTORY");
+        let error = create_fixture_ledger(
+            &private_path,
+            "private-run",
+            42,
+            uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+        )
+        .unwrap_err();
+        assert_eq!(error, "cannot create exclusive fixture ledger (NotFound)");
+        assert!(!error.contains("DO_NOT_DISCLOSE_LEDGER_DIRECTORY"));
+        assert!(!error.contains("private-run"));
+        assert!(!error.contains(&dir.path().display().to_string()));
+    }
 
     fn exited_state() -> ContainerState {
         ContainerState {

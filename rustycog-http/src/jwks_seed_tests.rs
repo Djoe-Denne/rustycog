@@ -1,9 +1,9 @@
 //! Private clock/state seams: no caller-supplied Instant and no 60-second sleeps.
 use super::super::jwt_handler::UserIdExtractor;
 use super::{
-    normalize_authority_url, Arc, AtomicBool, CommandError, Duration, HashMap, Instant, JwksCache,
-    LocalJwksSeed, Ordering, MAX_DOCUMENT_BYTES, MAX_KID_BYTES, MAX_NEGATIVE_KIDS,
-    MAX_SNAPSHOT_AGE,
+    normalize_authority_url, parse_jwks_document, Arc, AtomicBool, CommandError, Duration, HashMap,
+    Instant, JwksCache, LocalJwksSeed, Ordering, MAX_DOCUMENT_BYTES, MAX_KID_BYTES,
+    MAX_NEGATIVE_KIDS, MAX_SNAPSHOT_AGE,
 };
 use crate::rustycog_config::{AuthConfig, JwtAuthConfig};
 use crate::testing::http::jwt::{
@@ -25,6 +25,8 @@ fn auth(url: &str) -> AuthConfig {
             allowed_algorithms: vec!["RS256".into()],
             jwks_url: Some(url.into()),
             issuer: Some(TEST_PLATFORM_ISSUER.into()),
+            platform_issuer: Some(TEST_PLATFORM_ISSUER.into()),
+            allow_historical_platform_issuer: Some(false),
             audience: Some(TEST_JWT_AUDIENCE.into()),
             ..JwtAuthConfig::default()
         },

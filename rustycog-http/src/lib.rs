@@ -17,7 +17,10 @@ pub use extractors::ValidatedJson;
 pub use jwks::LocalJwksSeed;
 pub use jwt::TokenClaims;
 pub use jwt_handler::{JwtPrincipal, UserIdExtractionHandler, UserIdExtractor, ACCESS_TOKEN_TYP};
-pub use middleware_auth::{auth_middleware, optional_auth_middleware, AuthUser, OptionalAuthUser};
+pub use middleware_auth::{
+    auth_middleware, optional_auth_middleware, AuthPrincipal, AuthUser, OptionalAuthPrincipal,
+    OptionalAuthUser,
+};
 pub use owned_server::{
     start_router_owned, HttpShutdownBudget, HttpShutdownReport, OwnedHttpServer,
 };

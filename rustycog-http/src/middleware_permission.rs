@@ -79,18 +79,16 @@ pub async fn permission_middleware(
     let request_path = req.uri().path().to_owned();
     debug!(path = %request_path, "permission_middleware: entering");
 
-    let user_id = req
-        .extensions()
-        .get::<Uuid>()
-        .copied()
+    let principal = super::middleware_auth::request_principal(req.extensions())?
         .ok_or(StatusCode::UNAUTHORIZED)?;
+    let user_id = principal.principal.subject;
 
     let Some(resource_id) = resolve_resource_id(&guard, &request_path) else {
         debug!(path = %request_path, "permission_middleware: no resource UUID in path -> FORBIDDEN");
         return Err(StatusCode::FORBIDDEN);
     };
 
-    let subject = Subject::new(user_id);
+    let subject = principal.subject()?;
     let resource = ResourceRef::new(guard.object_type, resource_id);
 
     let allowed = guard
@@ -155,7 +153,7 @@ pub async fn optional_permission_middleware(
     let request_path = req.uri().path().to_owned();
     debug!(path = %request_path, "optional_permission_middleware: entering");
 
-    let user_id = req.extensions().get::<Uuid>().copied();
+    let principal = super::middleware_auth::request_principal(req.extensions())?;
     let named = guard.resource_param.is_some();
     let Some(resource_id) = resolve_resource_id(&guard, &request_path) else {
         if named {
@@ -168,21 +166,15 @@ pub async fn optional_permission_middleware(
         return Ok(next.run(req).await);
     };
 
-    let subject = user_id.map_or_else(
-        || {
-            debug!(
-                path = %request_path,
-                "optional_permission_middleware: anonymous caller, consulting checker with Subject::wildcard()"
-            );
-            Subject::wildcard()
-        },
-        Subject::new,
-    );
+    let subject = match principal {
+        Some(principal) => principal.subject()?,
+        None => Subject::wildcard(),
+    };
     let resource = ResourceRef::new(guard.object_type, resource_id);
 
     let allowed = guard
         .checker
-        .check(subject, guard.required, resource)
+        .check(subject.clone(), guard.required, resource)
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "optional_permission_middleware: checker error");
@@ -206,6 +198,90 @@ pub async fn optional_permission_middleware(
 #[cfg(test)]
 mod extract_named_tests {
     use super::*;
+    use crate::rustycog_http::JwtPrincipal;
+    use crate::rustycog_permission::{InMemoryPermissionChecker, PrincipalPolicy};
+    use axum::{middleware, routing::get, Router};
+    use tower::ServiceExt;
+
+    fn guarded_router(checker: Arc<InMemoryPermissionChecker>, optional: bool) -> Router {
+        let guard = Arc::new(PermissionGuard {
+            required: Permission::Read,
+            object_type: "organization",
+            checker,
+            path_template: None,
+            resource_param: None,
+        });
+        let router = Router::new().route("/orgs/{id}", get(|| async { "OK" }));
+        if optional {
+            router.route_layer(middleware::from_fn_with_state(
+                guard,
+                optional_permission_middleware,
+            ))
+        } else {
+            router.route_layer(middleware::from_fn_with_state(guard, permission_middleware))
+        }
+    }
+
+    #[tokio::test]
+    async fn uuid_extension_alone_is_not_a_permission_principal() {
+        let id = Uuid::new_v4();
+        let resource = Uuid::new_v4();
+        let checker = Arc::new(InMemoryPermissionChecker::new());
+        checker.allow(
+            Subject::new(id),
+            Permission::Read,
+            ResourceRef::new("organization", resource),
+        );
+        let mut request = Request::builder()
+            .uri(format!("/orgs/{resource}"))
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(id);
+        assert_eq!(
+            guarded_router(checker, false)
+                .oneshot(request)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn optional_principal_denial_is_not_wildcard() {
+        let id = Uuid::new_v4();
+        let resource = Uuid::new_v4();
+        let checker = Arc::new(InMemoryPermissionChecker::new());
+        checker.allow(
+            Subject::wildcard(),
+            Permission::Read,
+            ResourceRef::new("organization", resource),
+        );
+        let app = guarded_router(checker, true);
+        let request = || {
+            Request::builder()
+                .uri(format!("/orgs/{resource}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        assert_eq!(
+            app.clone().oneshot(request()).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let mut authenticated = request();
+        authenticated.extensions_mut().insert(JwtPrincipal {
+            iss: "https://org.example/iam".into(),
+            sub: id,
+            org: None,
+        });
+        authenticated.extensions_mut().insert(Arc::new(
+            PrincipalPolicy::new("https://platform.example/iam", false).unwrap(),
+        ));
+        assert_eq!(
+            app.oneshot(authenticated).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+    }
 
     #[test]
     fn named_param_ignores_trailing_uuid() {

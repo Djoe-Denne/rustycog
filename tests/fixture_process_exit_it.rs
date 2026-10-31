@@ -12,7 +12,15 @@ use rustycog_framework::testing::{
     common::start_service_testcontainer,
     testcontainers::{self, runners::AsyncRunner, GenericImage, ImageExt},
 };
-use std::{collections::BTreeMap, io::Write, path::Path, process::Stdio, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
+    io::Write,
+    os::windows::fs::MetadataExt,
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 use testcontainers::bollard::{container::StopContainerOptions, errors::Error, Docker};
 
 const CHILD_FLAG: &str = "RUSTYCOG_REAL_EXIT_CHILD";
@@ -49,6 +57,57 @@ fn child_creates_retained_container_then_exits() {
     });
     drop(runtime);
     std::process::exit(7);
+}
+
+fn snapshot_child_ledgers(dir: &Path) -> Result<BTreeSet<OsString>, String> {
+    std::fs::read_dir(dir)
+        .map_err(|_| "cannot snapshot child ledger directory")?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.file_name())
+                .map_err(|_| "cannot snapshot child ledger entry".into())
+        })
+        .collect()
+}
+
+fn find_new_child_ledger(
+    dir: &Path,
+    run: &str,
+    pid: u32,
+    before: &BTreeSet<OsString>,
+) -> Result<PathBuf, String> {
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    let prefix = format!("fixture-{run}-{pid}-");
+    let mut candidate = None;
+    for entry in std::fs::read_dir(dir).map_err(|_| "cannot discover child ledger directory")? {
+        let entry = entry.map_err(|_| "cannot discover child ledger entry")?;
+        let name = entry.file_name();
+        if before.contains(&name) {
+            continue;
+        }
+        let Some(incarnation) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(prefix.as_str()))
+            .and_then(|name| name.strip_suffix(".jsonl"))
+        else {
+            continue;
+        };
+        if !uuid::Uuid::parse_str(incarnation)
+            .is_ok_and(|id| id.simple().to_string() == incarnation)
+        {
+            continue;
+        }
+        let path = entry.path();
+        let metadata =
+            std::fs::symlink_metadata(&path).map_err(|_| "cannot inspect child ledger file")?;
+        if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err("child ledger must be a regular non-reparse file".into());
+        }
+        if candidate.replace(path).is_some() {
+            return Err("multiple new child ledgers; none adopted".into());
+        }
+    }
+    candidate.ok_or_else(|| "new child ledger missing; no older ledger adopted".into())
 }
 
 fn read_creations(path: &Path, run: &str, pid: u32) -> (Vec<serde_json::Value>, Vec<String>) {
@@ -135,6 +194,7 @@ async fn windows_explicit_exit_bypasses_guard_but_parent_finally_stops_exact_chi
         dir.is_absolute() && dir.is_dir(),
         "parent-approved ledger directory required"
     );
+    let before = snapshot_child_ledgers(&dir).expect("pre-spawn ledger snapshot required");
     let docker = testcontainers::core::client::docker_client_instance()
         .await
         .unwrap();
@@ -151,7 +211,6 @@ async fn windows_explicit_exit_bypasses_guard_but_parent_finally_stops_exact_chi
         .spawn()
         .unwrap();
     let pid = child.id().unwrap();
-    let path = dir.join(format!("fixture-{run}-{pid}.jsonl"));
     let mut errors = Vec::new();
     match tokio::time::timeout(Duration::from_secs(180), child.wait()).await {
         Ok(Ok(status)) if status.code() == Some(7) => {}
@@ -165,8 +224,17 @@ async fn windows_explicit_exit_bypasses_guard_but_parent_finally_stops_exact_chi
     }
     // No assertions/panics between discovering creation IDs and the finally
     // cleanup below. Errors are accumulated so a failing oracle cannot leak.
-    let (creations, ledger_errors) = read_creations(&path, &run, pid);
-    errors.extend(ledger_errors);
+    let (path, creations) = match find_new_child_ledger(&dir, &run, pid, &before) {
+        Ok(path) => {
+            let (creations, ledger_errors) = read_creations(&path, &run, pid);
+            errors.extend(ledger_errors);
+            (Some(path), creations)
+        }
+        Err(error) => {
+            errors.push(error);
+            (None, Vec::new())
+        }
+    };
     if creations.len() != 1 {
         errors.push("expected one exact-ID child creation".into());
     }
@@ -185,7 +253,10 @@ async fn windows_explicit_exit_bypasses_guard_but_parent_finally_stops_exact_chi
                 record["event"] = "process_exit_it_parent_stopped".into();
                 record["parent_process_id"] = std::process::id().into();
                 let persisted = (|| -> std::io::Result<()> {
-                    let mut file = std::fs::OpenOptions::new().append(true).open(&path)?;
+                    let path = path.as_ref().ok_or_else(|| {
+                        std::io::Error::other("validated child ledger path unavailable")
+                    })?;
+                    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
                     serde_json::to_writer(&mut file, &record)?;
                     file.write_all(b"\n")?;
                     file.sync_data()
@@ -198,4 +269,117 @@ async fn windows_explicit_exit_bypasses_guard_but_parent_finally_stops_exact_chi
         }
     }
     assert!(errors.is_empty(), "{}", errors.join("; "));
+}
+
+#[cfg(test)]
+mod ledger_tests {
+    use super::*;
+
+    fn ledger_path(dir: &Path, run: &str, pid: u32, incarnation: u128) -> PathBuf {
+        dir.join(format!(
+            "fixture-{run}-{pid}-{}.jsonl",
+            uuid::Uuid::from_u128(incarnation).simple()
+        ))
+    }
+
+    fn creation_record(run: &str, pid: u32, id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "run_id": run,
+            "process_id": pid,
+            "event": "created",
+            "container_id": id,
+        })
+    }
+
+    #[test]
+    fn child_ledger_discovery_excludes_pre_spawn_reused_pid_ledgers() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = "reused-pid";
+        let pid = 42;
+        let old_record = creation_record(run, pid, &"a".repeat(64)).to_string();
+        let legacy = dir.path().join(format!("fixture-{run}-{pid}.jsonl"));
+        let old = ledger_path(dir.path(), run, pid, 1);
+        std::fs::write(&legacy, &old_record).unwrap();
+        std::fs::write(&old, &old_record).unwrap();
+        let before = snapshot_child_ledgers(dir.path()).unwrap();
+        assert!(find_new_child_ledger(dir.path(), run, pid, &before).is_err());
+        let fresh = ledger_path(dir.path(), run, pid, 2);
+        let new_id = "b".repeat(64);
+        std::fs::write(&fresh, creation_record(run, pid, &new_id).to_string()).unwrap();
+        let selected = find_new_child_ledger(dir.path(), run, pid, &before).unwrap();
+        assert_eq!(selected, fresh);
+        let (creations, errors) = read_creations(&selected, run, pid);
+        assert!(errors.is_empty());
+        assert_eq!(creations.len(), 1);
+        assert_eq!(creations[0]["container_id"], new_id);
+        assert_eq!(std::fs::read_to_string(legacy).unwrap(), old_record);
+        assert_eq!(std::fs::read_to_string(old).unwrap(), old_record);
+    }
+
+    #[test]
+    fn child_ledger_discovery_rejects_missing_or_multiple_new_ledgers() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = snapshot_child_ledgers(dir.path()).unwrap();
+        assert!(find_new_child_ledger(dir.path(), "scope", 42, &before).is_err());
+        for incarnation in [1, 2] {
+            std::fs::write(ledger_path(dir.path(), "scope", 42, incarnation), "").unwrap();
+        }
+        assert!(find_new_child_ledger(dir.path(), "scope", 42, &before).is_err());
+        let non_file = tempfile::tempdir().unwrap();
+        let before = snapshot_child_ledgers(non_file.path()).unwrap();
+        std::fs::create_dir(ledger_path(non_file.path(), "scope", 42, 1)).unwrap();
+        assert!(find_new_child_ledger(non_file.path(), "scope", 42, &before).is_err());
+    }
+
+    #[test]
+    fn child_ledger_discovery_matches_exact_run_and_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = snapshot_child_ledgers(dir.path()).unwrap();
+        for (run, pid) in [("scope-extra", 42), ("scope", 420)] {
+            std::fs::write(ledger_path(dir.path(), run, pid, 1), "").unwrap();
+        }
+        for name in [
+            "fixture-scope-42-not-a-uuid.jsonl",
+            "fixture-scope-42-00000000-0000-0000-0000-000000000001.jsonl",
+            "fixture-scope-42-00000000000000000000000000000001.jsonl.extra",
+        ] {
+            std::fs::write(dir.path().join(name), "").unwrap();
+        }
+        assert!(find_new_child_ledger(dir.path(), "scope", 42, &before).is_err());
+        let exact = ledger_path(dir.path(), "scope", 42, 2);
+        std::fs::write(&exact, "").unwrap();
+        assert_eq!(
+            find_new_child_ledger(dir.path(), "scope", 42, &before).unwrap(),
+            exact
+        );
+    }
+
+    #[test]
+    fn child_ledger_records_reject_wrong_identity_and_invalid_created_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ledger_path(dir.path(), "scope", 42, 1);
+        let valid_id = "a".repeat(64);
+        let valid = creation_record("scope", 42, &valid_id);
+        std::fs::write(&path, valid.to_string()).unwrap();
+        let (creations, errors) = read_creations(&path, "scope", 42);
+        assert_eq!(creations.len(), 1);
+        assert!(errors.is_empty());
+        let mut invalid = vec![
+            creation_record("other-scope", 42, &valid_id).to_string(),
+            creation_record("scope", 420, &valid_id).to_string(),
+            creation_record("scope", 42, "abc").to_string(),
+            creation_record("scope", 42, &"z".repeat(64)).to_string(),
+            "not-json".into(),
+        ];
+        let mut no_id = valid;
+        no_id["container_id"] = serde_json::Value::Null;
+        invalid.push(no_id.to_string());
+        for text in invalid {
+            std::fs::write(&path, text).unwrap();
+            let (creations, errors) = read_creations(&path, "scope", 42);
+            assert!(creations.is_empty());
+            assert!(!errors.is_empty());
+        }
+    }
 }

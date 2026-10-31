@@ -6,15 +6,18 @@ use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use rustycog_framework::core::error::DomainError;
 use rustycog_framework::http::{AppState, AuthUser, RouteBuilder, UserIdExtractor};
 use rustycog_framework::permission::{
-    InMemoryPermissionChecker, Permission, PermissionChecker, ResourceId, ResourceRef, Subject,
+    InMemoryPermissionChecker, Permission, PermissionChecker, PrincipalPolicy, ResourceId,
+    ResourceRef, Subject,
 };
 use serde::Serialize;
 use uuid::Uuid;
 
 const TEST_JWT_SECRET: &str = "rustycog-test-hs256-secret";
+const TEST_PLATFORM_ISSUER: &str = "https://sdk-platform.example/iam";
 
 #[derive(Debug, Serialize)]
 struct TestClaims {
+    iss: String,
     sub: String,
     exp: usize,
     iat: usize,
@@ -72,7 +75,10 @@ async fn make_server(
     checker: Arc<InMemoryPermissionChecker>,
 ) -> (SocketAddr, tokio::task::JoinHandle<Result<(), DomainError>>) {
     let registry = Arc::new(rustycog_framework::command::CommandRegistry::default());
-    let extractor = UserIdExtractor::from_resolved_secret(TEST_JWT_SECRET).unwrap();
+    let extractor = UserIdExtractor::from_resolved_secret(TEST_JWT_SECRET)
+        .unwrap()
+        .with_principal_policy(PrincipalPolicy::new(TEST_PLATFORM_ISSUER, false).unwrap())
+        .unwrap();
     let state = AppState::new(
         Arc::new(rustycog_framework::command::GenericCommandService::new(
             registry,
@@ -139,6 +145,7 @@ async fn make_server(
 fn make_token_for_user(user: Uuid) -> String {
     let now = chrono::Utc::now();
     let claims = TestClaims {
+        iss: TEST_PLATFORM_ISSUER.into(),
         sub: user.to_string(),
         exp: usize::try_from((now + chrono::Duration::hours(1)).timestamp()).unwrap_or(0),
         iat: usize::try_from(now.timestamp()).unwrap_or(0),

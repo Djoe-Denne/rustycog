@@ -578,7 +578,7 @@ mod tests {
             child
                 .args([
                     "--exact",
-                    "fixture_runtime::process_exit::tests::child_exit_fixture",
+                    "testing::common::fixture_runtime::process_exit::tests::child_exit_fixture",
                     "--nocapture",
                 ])
                 .env("RUSTYCOG_EXIT_UNIT_LEDGER", &path);
@@ -589,6 +589,12 @@ mod tests {
                 child.env("RUSTYCOG_EXIT_UNIT_FAIL", "1");
             }
             let output = child.output().unwrap();
+            assert!(
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .any(|line| line.trim() == "running 1 test"),
+                "child must execute exactly one fixture test, not silently match zero tests"
+            );
             assert_eq!(output.status.code(), Some(if nonzero { 7 } else { 0 }));
             let ledger = events(&path);
             if cfg!(windows) && nonzero {

@@ -197,12 +197,14 @@ async fn seed_configuration_is_strict_and_normalizes_only_the_authority_endpoint
 async fn explicit_platform_seed_issuer_preserves_hmac_config_and_fail_closed_requirements() {
     let historical = "https://historical.example/iam";
     for invalid in ["", "  ", historical] {
-        assert!(UserIdExtractor::from_config_with_seeded_jwks_and_platform_issuer(
-            auth(AUTHORITY),
-            seed(AUTHORITY, test_rs256_jwks_json()).await,
-            invalid,
-        )
-        .is_err());
+        assert!(
+            UserIdExtractor::from_config_with_seeded_jwks_and_platform_issuer(
+                auth(AUTHORITY),
+                seed(AUTHORITY, test_rs256_jwks_json()).await,
+                invalid,
+            )
+            .is_err()
+        );
     }
     let mut mixed = auth(AUTHORITY);
     mixed.jwt.allowed_algorithms = vec!["RS256".into(), "HS256".into()];
@@ -236,12 +238,14 @@ async fn explicit_platform_seed_issuer_preserves_hmac_config_and_fail_closed_req
     // RS256-only no longer needs to place P in the HS256 issuer field.
     let mut rs_only = auth(AUTHORITY);
     rs_only.jwt.issuer = None;
-    assert!(UserIdExtractor::from_config_with_seeded_jwks_and_platform_issuer(
-        rs_only,
-        seed(AUTHORITY, test_rs256_jwks_json()).await,
-        TEST_PLATFORM_ISSUER,
-    )
-    .is_ok());
+    assert!(
+        UserIdExtractor::from_config_with_seeded_jwks_and_platform_issuer(
+            rs_only,
+            seed(AUTHORITY, test_rs256_jwks_json()).await,
+            TEST_PLATFORM_ISSUER,
+        )
+        .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -273,30 +277,36 @@ async fn explicit_seed_requires_hmac_issuer_only_when_effective_allowlist_includ
             config.jwt.allowed_algorithms = algorithms.iter().map(|s| (*s).into()).collect();
             config.jwt.hs256_secret = Some("independent-hmac-fixture-secret".into());
             config.jwt.issuer = issuer.map(str::to_string);
-            assert!(UserIdExtractor::from_config_with_seeded_jwks_and_platform_issuer(
-                config.clone(),
-                seed(AUTHORITY, test_rs256_jwks_json()).await,
-                TEST_PLATFORM_ISSUER,
-            )
-            .is_ok());
-            assert!(UserIdExtractor::from_config_with_seeded_jwks_and_platform_issuer(
-                config,
-                seed(AUTHORITY, test_rs256_jwks_json()).await,
-                "https://wrong-platform.example/iam",
-            )
-            .is_err());
+            assert!(
+                UserIdExtractor::from_config_with_seeded_jwks_and_platform_issuer(
+                    config.clone(),
+                    seed(AUTHORITY, test_rs256_jwks_json()).await,
+                    TEST_PLATFORM_ISSUER,
+                )
+                .is_ok()
+            );
+            assert!(
+                UserIdExtractor::from_config_with_seeded_jwks_and_platform_issuer(
+                    config,
+                    seed(AUTHORITY, test_rs256_jwks_json()).await,
+                    "https://wrong-platform.example/iam",
+                )
+                .is_err()
+            );
         }
     }
     // Both the new seam and the historical API retain valid mixed H=P.
     let mut mixed = auth(AUTHORITY);
     mixed.jwt.allowed_algorithms = vec!["RS256".into(), "HS256".into()];
     mixed.jwt.hs256_secret = Some("independent-hmac-fixture-secret".into());
-    assert!(UserIdExtractor::from_config_with_seeded_jwks_and_platform_issuer(
-        mixed.clone(),
-        seed(AUTHORITY, test_rs256_jwks_json()).await,
-        TEST_PLATFORM_ISSUER,
-    )
-    .is_ok());
+    assert!(
+        UserIdExtractor::from_config_with_seeded_jwks_and_platform_issuer(
+            mixed.clone(),
+            seed(AUTHORITY, test_rs256_jwks_json()).await,
+            TEST_PLATFORM_ISSUER,
+        )
+        .is_ok()
+    );
     assert!(UserIdExtractor::from_config_with_seeded_jwks(
         mixed,
         seed(AUTHORITY, test_rs256_jwks_json()).await,

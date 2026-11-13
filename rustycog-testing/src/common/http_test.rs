@@ -31,6 +31,17 @@ where
     D: ServiceTestDescriptor<T>,
     T: Send + Sync + 'static,
 {
+    spawn_test_server_with_config(descriptor, None).await
+}
+
+pub(crate) async fn spawn_test_server_with_config<D, T>(
+    descriptor: Arc<D>,
+    resolved_server_port: Option<u16>,
+) -> anyhow::Result<()>
+where
+    D: ServiceTestDescriptor<T>,
+    T: Send + Sync + 'static,
+{
     // Use your real config loading logic
     let config = load_config_fresh::<D::Config>()?;
 
@@ -45,7 +56,7 @@ where
     debug!("   TLS enabled: {}", config.server_config().tls_enabled);
 
     // Create server configuration
-    let server_config = ServerConfig {
+    let mut server_config = ServerConfig {
         host: config.server_config().host.clone(),
         port: config.server_config().port,
         tls_enabled: config.server_config().tls_enabled,
@@ -75,5 +86,8 @@ where
     );
 
     // Build and run the application - this should run indefinitely
+    if let Some(port) = resolved_server_port {
+        server_config.port = port;
+    }
     descriptor.run_app(config, server_config).await
 }

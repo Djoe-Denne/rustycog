@@ -248,6 +248,13 @@ Health-check abstractions.
 ### `rustycog::testing` (`testing`)
 Testing module with testcontainers, HTTP helpers, wiremock fixtures, and real infrastructure bootstrap utilities.
 
+The shared HTTP test-server harness resolves `port = 0` afresh for each new
+server, after dependency fixtures have started, and passes that explicit port to
+the service descriptor. It does not reuse the production configuration's cached
+ephemeral port: a stopped server's former port may now belong to wiremock.
+Reusing a still-running server returns its stored URL. Explicit nonzero ports
+are preserved, and the service's TLS/client-certificate settings are unchanged.
+
 ## Error Handling Philosophy
 
 RustyCog promotes a structured approach to error handling:

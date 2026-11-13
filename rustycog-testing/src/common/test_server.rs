@@ -1,4 +1,5 @@
-use crate::testing::common::{build_test_app, spawn_test_server, ServiceTestDescriptor};
+use super::http_test::spawn_test_server_with_config;
+use crate::testing::common::{build_test_app, ServiceTestDescriptor};
 use reqwest::Client;
 use rustycog::config::{load_config_part, ServerConfig};
 use std::any::TypeId;
@@ -12,8 +13,23 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 /// Global test server instance that starts only once
-static TEST_SERVER: OnceLock<Arc<Mutex<Option<JoinHandle<()>>>>> = OnceLock::new();
+static TEST_SERVER: OnceLock<Arc<Mutex<Option<TestServer>>>> = OnceLock::new();
 static TEST_SERVER_DESCRIPTOR_TYPE: OnceLock<Arc<Mutex<Option<TypeId>>>> = OnceLock::new();
+
+struct TestServer {
+    handle: JoinHandle<()>,
+    base_url: String,
+}
+
+/// Resolve a new server's port after its dependency fixtures have started.
+/// A port cached by an earlier runtime may now belong to wiremock or another listener.
+fn resolve_new_server_config(mut config: ServerConfig) -> io::Result<ServerConfig> {
+    if config.port == 0 {
+        let listener = std::net::TcpListener::bind((config.host.as_str(), 0))?;
+        config.port = listener.local_addr()?.port();
+    }
+    Ok(config)
+}
 
 /// Get or create the global test server instance
 ///
@@ -38,20 +54,18 @@ where
         descriptor_type_guard.is_some_and(|existing| existing != descriptor_type);
 
     if descriptor_changed {
-        if let Some(handle) = server_guard.take() {
+        if let Some(server) = server_guard.take() {
             debug!("🔄 Descriptor changed, restarting test server...");
-            handle.abort();
-            let _ = handle.await;
+            server.handle.abort();
+            let _ = server.handle.await;
         }
         *descriptor_type_guard = None;
     }
 
     // Check if we need to start a new server
-    let needs_new_server = server_guard.as_ref().is_none_or(JoinHandle::is_finished);
-
-    let server_config = load_config_part::<ServerConfig>("server")?;
-    let server_port = server_config.actual_port();
-    let base_url = format!("http://{}:{}", server_config.host, server_port);
+    let needs_new_server = server_guard
+        .as_ref()
+        .is_none_or(|server| server.handle.is_finished());
 
     if needs_new_server {
         // If the old handle is finished, clear it
@@ -63,22 +77,41 @@ where
 
         build_test_app::<D, T>(descriptor.clone()).await?;
 
+        let server_config = resolve_new_server_config(load_config_part::<ServerConfig>("server")?)?;
+        let server_port = server_config.port;
+        let base_url = format!("http://{}:{}", server_config.host, server_port);
+
         // Start the server using the existing spawn_test_server function
         let server_handle = tokio::spawn(async move {
-            if let Err(e) = spawn_test_server::<D, T>(descriptor.clone()).await {
+            if let Err(e) =
+                spawn_test_server_with_config::<D, T>(descriptor.clone(), Some(server_port)).await
+            {
                 debug!("Server failed to start: {}", e);
             }
         });
 
-        *server_guard = Some(server_handle);
+        *server_guard = Some(TestServer {
+            handle: server_handle,
+            base_url,
+        });
         *descriptor_type_guard = Some(descriptor_type);
 
-        wait_for_server_ready(&server_config.host, server_port, server_guard.as_ref()).await?;
+        wait_for_server_ready(
+            &server_config.host,
+            server_port,
+            server_guard.as_ref().map(|server| &server.handle),
+        )
+        .await?;
     } else {
         debug!("♻️  Reusing existing server instance");
     }
 
     // Return the base URL based on test config
+    let base_url = server_guard
+        .as_ref()
+        .ok_or_else(|| io::Error::other("test server missing after startup"))?
+        .base_url
+        .clone();
     debug!("🔗 Test client will connect to: {}", base_url);
     Ok(base_url)
 }
@@ -154,4 +187,46 @@ async fn wait_for_server_ready(
         format!("test server at {address} did not become ready"),
     )
     .into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_server_does_not_reuse_a_cached_port_now_owned_by_a_fixture() {
+        let config = ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            ..ServerConfig::default()
+        };
+        let cached = config.actual_port();
+        // Reproduce the CI condition: the application stopped and wiremock
+        // acquired its former port. A TCP-only probe would accept this listener.
+        let fixture = std::net::TcpListener::bind(("127.0.0.1", cached)).unwrap();
+        let resolved = resolve_new_server_config(config.clone()).unwrap();
+        assert_ne!(resolved.port, cached);
+        assert_ne!(resolved.port, 0);
+        assert_eq!(
+            config.actual_port(),
+            cached,
+            "production cache remains unchanged"
+        );
+        let application =
+            std::net::TcpListener::bind((resolved.host.as_str(), resolved.port)).unwrap();
+        assert_eq!(application.local_addr().unwrap().port(), resolved.port);
+        drop(fixture);
+    }
+
+    #[test]
+    fn explicit_server_port_is_not_silently_changed_when_occupied() {
+        let fixture = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = fixture.local_addr().unwrap().port();
+        let config = ServerConfig {
+            host: "127.0.0.1".into(),
+            port,
+            ..ServerConfig::default()
+        };
+        assert_eq!(resolve_new_server_config(config).unwrap().port, port);
+    }
 }

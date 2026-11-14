@@ -255,6 +255,13 @@ ephemeral port: a stopped server's former port may now belong to wiremock.
 Reusing a still-running server returns its stored URL. Explicit nonzero ports
 are preserved, and the service's TLS/client-certificate settings are unchanged.
 
+The SQS fixture requires a successful SDK `ListQueues` response before creating
+its configured queues. An open TCP listener or an HTTP success with an invalid
+SQS body is not readiness. Protocol probes have a shared 30-second deadline;
+transient transport/server/throttling failures may recover within that budget,
+while permanent HTTP rejections fail immediately. This does not retry business
+operations or establish an authentication proof.
+
 ## Error Handling Philosophy
 
 RustyCog promotes a structured approach to error handling:

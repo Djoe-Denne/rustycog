@@ -10,6 +10,9 @@ use rustycog::config::{load_config_part, QueueConfig, SqsConfig};
 use rustycog::events::event::DomainEvent;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+
+#[cfg(test)]
+mod tests;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -101,7 +104,7 @@ impl TestSqs {
         let client = Self::create_sqs_client(&endpoint_url, &region).await?;
 
         // Wait for LocalStack to be ready
-        Self::wait_for_localstack(&endpoint_url).await?;
+        Self::wait_for_localstack(&client).await?;
 
         // Create test queues using configured queue names
         let mut queue_urls = Self::create_test_queues(&client, &sqs_config).await?;
@@ -144,43 +147,57 @@ impl TestSqs {
         Ok(client)
     }
 
-    /// Wait for `LocalStack` to be ready
-    async fn wait_for_localstack(endpoint_url: &str) -> Result<(), Box<dyn std::error::Error>> {
-        info!("Waiting for LocalStack to be ready...");
+    /// Require the SQS API, not just its TCP listener, before creating queues.
+    async fn wait_for_localstack(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+        Self::wait_for_sqs_ready(client, Duration::from_secs(30), Duration::from_millis(200)).await
+    }
 
-        let max_attempts = 30;
+    async fn wait_for_sqs_ready(
+        client: &Client,
+        budget: Duration,
+        interval: Duration,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let deadline = tokio::time::Instant::now() + budget;
         let mut attempts = 0;
+        let mut last_error = "no ListQueues response".to_owned();
 
-        // Extract host and port from endpoint URL
-        let url = url::Url::parse(endpoint_url)?;
-        let host = url.host_str().ok_or("SQS endpoint missing host")?;
-        let port = url.port().ok_or("SQS endpoint missing mapped port")?;
-
-        while attempts < max_attempts {
-            // Try to connect to LocalStack
-            match tokio::net::TcpStream::connect((host, port)).await {
-                Ok(_) => {
-                    info!("LocalStack is ready after {} attempts", attempts + 1);
-                    // Give it a moment more to fully initialize SQS service
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "LocalStack SQS ListQueues readiness deadline exceeded after {attempts} attempts: {last_error}"
+                )
+                .into());
+            }
+            attempts += 1;
+            match tokio::time::timeout_at(deadline, client.list_queues().max_results(1).send())
+                .await
+            {
+                Ok(Ok(_)) => {
+                    info!("LocalStack SQS API is ready after {} attempts", attempts);
                     return Ok(());
                 }
-                Err(e) => {
-                    debug!("LocalStack connection failed: {}", e);
+                Ok(Err(error)) => {
+                    if let Some(response) = error.raw_response() {
+                        let status = response.status().as_u16();
+                        if status < 500 && status != 429 {
+                            return Err(format!(
+                                "LocalStack SQS ListQueues readiness rejected an invalid response (HTTP {status})"
+                            )
+                            .into());
+                        }
+                    }
+                    last_error = error.to_string();
+                    debug!("LocalStack SQS API is not ready: {}", last_error);
+                }
+                Err(_) => {
+                    return Err(format!(
+                        "LocalStack SQS ListQueues readiness deadline exceeded after {attempts} attempts"
+                    )
+                    .into());
                 }
             }
-
-            attempts += 1;
-            if attempts < max_attempts {
-                debug!(
-                    "Retrying LocalStack connection in 1 second... (attempt {}/{})",
-                    attempts, max_attempts
-                );
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
+            tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + interval)).await;
         }
-
-        Err(format!("LocalStack failed to become ready after {max_attempts} attempts").into())
     }
 
     /// Create test queues using queue names from configuration

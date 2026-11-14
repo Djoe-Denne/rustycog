@@ -14,6 +14,8 @@ use tokio::task::JoinHandle;
 
 #[path = "fixture_runtime/process_exit.rs"]
 mod process_exit;
+#[path = "fixture_runtime/start_diagnostic.rs"]
+mod start_diagnostic;
 
 type StartResult = Result<OwnedContainer, String>;
 type Task = Arc<Slot>;
@@ -460,44 +462,50 @@ impl Attempt {
                 .lock()
                 .map_err(|_| "fixture supervisor lock poisoned")?;
             let task = tokio::spawn(async move {
-                if let Ok(container) = create.await {
-                    let id = container.id().to_string();
-                    if id.is_empty() {
+                match create.await {
+                    Ok(container) => {
+                        let id = container.id().to_string();
+                        if id.is_empty() {
+                            self.context.unknown(
+                                self.number,
+                                &self.role,
+                                &self.name,
+                                "unknown_empty_id",
+                                self.port,
+                            );
+                            return Err("fixture returned no ID; cleanup INCONCLUSIVE".into());
+                        }
+                        let exit_record = process_exit::track(&self, &id)?;
+                        let owned = OwnedContainer {
+                            container: Some(container),
+                            attempt: self,
+                            id,
+                            removed_confirmed: false,
+                            exit_record,
+                        };
+                        owned.attempt.context.event(
+                            owned.attempt.number,
+                            &owned.attempt.role,
+                            &owned.attempt.name,
+                            Some(&owned.id),
+                            "created",
+                            owned.attempt.port,
+                        )?;
+                        Ok(owned)
+                    }
+                    Err(error) => {
                         self.context.unknown(
                             self.number,
                             &self.role,
                             &self.name,
-                            "unknown_empty_id",
+                            "unknown_opaque_start_failure",
                             self.port,
                         );
-                        return Err("fixture returned no ID; cleanup INCONCLUSIVE".into());
+                        Err(format!(
+                            "opaque fixture start failure; identity UNKNOWN; {}",
+                            start_diagnostic::describe(&error)
+                        ))
                     }
-                    let exit_record = process_exit::track(&self, &id)?;
-                    let owned = OwnedContainer {
-                        container: Some(container),
-                        attempt: self,
-                        id,
-                        removed_confirmed: false,
-                        exit_record,
-                    };
-                    owned.attempt.context.event(
-                        owned.attempt.number,
-                        &owned.attempt.role,
-                        &owned.attempt.name,
-                        Some(&owned.id),
-                        "created",
-                        owned.attempt.port,
-                    )?;
-                    Ok(owned)
-                } else {
-                    self.context.unknown(
-                        self.number,
-                        &self.role,
-                        &self.name,
-                        "unknown_opaque_start_failure",
-                        self.port,
-                    );
-                    Err("opaque fixture start failure; identity UNKNOWN".into())
                 }
             });
             *slot
@@ -1160,6 +1168,54 @@ mod safety_tests {
         })));
         assert!(await_retained(&cell).await.unwrap_err().is_panic());
         assert!(cell.lock().await.is_none());
+    }
+    #[tokio::test]
+    async fn start_failure_preserves_safe_diagnostics_without_claiming_identity() {
+        use testcontainers::core::{client::ClientError, error::TestcontainersError};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.jsonl");
+        let context = Arc::new(Context {
+            run: "pure-start-diagnostic".into(),
+            endpoint: Endpoint::parse("local", None).unwrap(),
+            ledger: Mutex::new(std::fs::File::create(&path).unwrap()),
+            ids: Mutex::new(HashMap::new()),
+            unknown: AtomicBool::new(false),
+        });
+        let attempt = Attempt {
+            context: context.clone(),
+            number: 0,
+            role: "postgres".into(),
+            name: "diagnostic-only".into(),
+            port: 60870,
+        };
+        let error = TestcontainersError::Client(ClientError::StartContainer(
+            testcontainers::bollard::errors::Error::DockerResponseServerError {
+                status_code: 500,
+                message: "Ports are not available: bind: An attempt was made to access a socket in a way forbidden by its access permissions; password=secret-alpha token=secret-beta".into(),
+            },
+        ));
+        let failure = attempt
+            .start(async move { Err(error) })
+            .await
+            .err()
+            .expect("fixture start must fail");
+        assert!(failure.contains("stage=start_container"));
+        assert!(failure.contains("http_status=500"));
+        assert!(failure.contains("reason=permission_denied"));
+        assert!(failure.contains("identity UNKNOWN"));
+        let ledger = std::fs::read_to_string(path).unwrap();
+        for sentinel in ["secret-alpha", "secret-beta"] {
+            assert!(!failure.contains(sentinel));
+            assert!(!ledger.contains(sentinel));
+        }
+        let events: Vec<serde_json::Value> = ledger
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(!events.is_empty());
+        assert!(events.iter().all(|event| event["container_id"].is_null()));
+        assert!(context.ids.lock().unwrap().is_empty());
+        assert!(context.unknown.load(Ordering::SeqCst));
     }
     #[tokio::test(flavor = "current_thread")]
     async fn pending_creation_releases_unrelated_fixture_then_reconciles_exact_result() {

@@ -167,7 +167,7 @@ impl DatabaseConfig {
     /// This method caches the resolved port to ensure consistency across calls
     pub fn actual_port(&self) -> u16 {
         if self.port == 0 {
-            let cache_key = format!("{}:{}:{}", self.host, self.db, self.creds.username);
+            let cache_key = format!("db:{}:{}:{}", self.host, self.db, self.creds.username);
             let cache = PORT_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
             {
                 let mut port_cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
@@ -229,13 +229,13 @@ impl DatabaseConfig {
         Ok(Self::new(username, password, host, port, db))
     }
 
-    /// Clear the port cache (useful for testing)
+    /// Invalidate all database ports without changing other fixture ports.
     pub fn clear_port_cache() {
         if let Some(cache) = PORT_CACHE.get() {
             cache
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .remove(&"db".to_string());
+                .retain(|key, _| !key.starts_with("db:"));
             debug!("DB port cleared from cache");
         }
     }
@@ -1557,8 +1557,43 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::SqsConfig;
+    use super::{DatabaseConfig, SqsConfig, PORT_CACHE};
     use std::collections::HashMap;
+
+    #[test]
+    fn database_port_cache_reset_preserves_unrelated_fixture_ports() {
+        let first = DatabaseConfig {
+            db: "cache-reset-test-a".into(),
+            ..DatabaseConfig::default()
+        };
+        let second = DatabaseConfig {
+            db: "cache-reset-test-b".into(),
+            ..DatabaseConfig::default()
+        };
+        let first_port = first.actual_port();
+        let second_port = second.actual_port();
+        assert_eq!(first.actual_port(), first_port);
+        assert_eq!(second.actual_port(), second_port);
+        let cache = PORT_CACHE.get().unwrap();
+        let unrelated = "cache-reset-unrelated-fixture";
+        cache.lock().unwrap().insert(unrelated.into(), 45678);
+
+        DatabaseConfig::clear_port_cache();
+
+        let mut ports = cache.lock().unwrap();
+        let databases_cleared = !ports
+            .keys()
+            .any(|key| key.contains("cache-reset-test-a") || key.contains("cache-reset-test-b"));
+        let unrelated_port = ports.remove(unrelated);
+        drop(ports);
+        assert!(
+            databases_cleared,
+            "database reset must invalidate every database configuration"
+        );
+        assert_eq!(unrelated_port, Some(45678));
+        let resolved = first.actual_port();
+        assert_eq!(first.actual_port(), resolved);
+    }
 
     #[test]
     fn sqs_config_returns_event_specific_destination_queues() {

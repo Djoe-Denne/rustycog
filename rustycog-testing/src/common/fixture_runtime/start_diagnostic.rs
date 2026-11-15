@@ -35,7 +35,7 @@ pub(super) fn describe(error: &TestcontainersError) -> String {
     }
 }
 
-fn docker(stage: &str, error: &DockerError) -> String {
+pub(super) fn docker(stage: &str, error: &DockerError) -> String {
     match error {
         DockerError::DockerResponseServerError {
             status_code,

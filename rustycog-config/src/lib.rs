@@ -229,6 +229,43 @@ impl DatabaseConfig {
         Ok(Self::new(username, password, host, port, db))
     }
 
+    /// Publish a daemon-assigned database port for subsequent typed config loads.
+    ///
+    /// Only dynamic configurations use the cache. Explicit fixed ports must match.
+    ///
+    /// # Errors
+    /// Rejects zero or a mapping that contradicts an explicitly configured port.
+    pub fn cache_mapped_port(&self, mapped: u16) -> Result<(), ConfigError> {
+        if mapped == 0 || (self.port != 0 && self.port != mapped) {
+            return Err(ConfigError::Message(
+                "Invalid daemon-mapped database port".to_owned(),
+            ));
+        }
+        if self.port == 0 {
+            let key = format!("db:{}:{}:{}", self.host, self.db, self.creds.username);
+            PORT_CACHE
+                .get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(key, mapped);
+        }
+        Ok(())
+    }
+
+    /// Remove only this dynamic configuration's unchanged mapped-port publication.
+    pub fn clear_mapped_port(&self, mapped: u16) {
+        if self.port != 0 {
+            return;
+        }
+        if let Some(cache) = PORT_CACHE.get() {
+            let key = format!("db:{}:{}:{}", self.host, self.db, self.creds.username);
+            let mut ports = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            if ports.get(&key) == Some(&mapped) {
+                ports.remove(&key);
+            }
+        }
+    }
+
     /// Invalidate all database ports without changing other fixture ports.
     pub fn clear_port_cache() {
         if let Some(cache) = PORT_CACHE.get() {
@@ -1559,9 +1596,11 @@ where
 mod tests {
     use super::{DatabaseConfig, SqsConfig, PORT_CACHE};
     use std::collections::HashMap;
+    static DATABASE_PORT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn database_port_cache_reset_preserves_unrelated_fixture_ports() {
+        let _guard = DATABASE_PORT_TEST_LOCK.lock().unwrap();
         let first = DatabaseConfig {
             db: "cache-reset-test-a".into(),
             ..DatabaseConfig::default()
@@ -1593,6 +1632,48 @@ mod tests {
         assert_eq!(unrelated_port, Some(45678));
         let resolved = first.actual_port();
         assert_eq!(first.actual_port(), resolved);
+    }
+
+    #[test]
+    fn daemon_mapped_database_ports_reach_reloaded_configs_without_changing_fixed_ports() {
+        let _guard = DATABASE_PORT_TEST_LOCK.lock().unwrap();
+        let first = DatabaseConfig {
+            db: "daemon-port-test-a".into(),
+            ..DatabaseConfig::default()
+        };
+        let second = DatabaseConfig {
+            db: "daemon-port-test-b".into(),
+            ..DatabaseConfig::default()
+        };
+        first.cache_mapped_port(41001).unwrap();
+        second.cache_mapped_port(41002).unwrap();
+        assert_eq!(first.clone().actual_port(), 41001);
+        assert_eq!(second.clone().actual_port(), 41002);
+        assert!(first.cache_mapped_port(0).is_err());
+        assert_eq!(first.actual_port(), 41001);
+        let fixed = DatabaseConfig {
+            port: 42000,
+            ..first.clone()
+        };
+        fixed.cache_mapped_port(42000).unwrap();
+        assert!(fixed.cache_mapped_port(42001).is_err());
+        assert_eq!(fixed.actual_port(), 42000);
+        assert_eq!(first.actual_port(), 41001);
+        first.clear_mapped_port(41000);
+        assert_eq!(first.actual_port(), 41001);
+        first.cache_mapped_port(41003).unwrap();
+        first.clear_mapped_port(41001);
+        assert_eq!(first.actual_port(), 41003);
+        first.clear_mapped_port(41003);
+        assert_eq!(second.actual_port(), 41002);
+        assert!(!PORT_CACHE
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|key| { key.contains("daemon-port-test-a") }));
+        DatabaseConfig::clear_port_cache();
     }
 
     #[test]

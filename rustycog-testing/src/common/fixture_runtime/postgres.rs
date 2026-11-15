@@ -192,7 +192,7 @@ async fn start_with_registration(
         Err(error) => return failed(owned, error, "mapped_port_failed").await,
     };
     owned.attempt.port = mapped;
-    if config.cache_mapped_port(mapped).is_err() {
+    if config.port != 0 && config.port != mapped {
         return failed(
             owned,
             "PostgreSQL mapping contradicts configured port".into(),
@@ -200,7 +200,9 @@ async fn start_with_registration(
         )
         .await;
     }
-    owned.database_publication = Some(config);
+    // A retained creation can outlive a cancelled initializer. It owns the
+    // container, not the singleton's configuration publication. The live caller
+    // publishes only after joining this result while holding the singleton lock.
     Ok(owned)
 }
 
@@ -432,21 +434,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unjoined_postgres_results_cannot_overwrite_a_live_initializers_cache() {
+        // Serialize this global-cache oracle against the synchronous config tests.
+        // The guard is outside the per-test async runtime, never inside a spawned task.
+        let _guard = crate::config::DATABASE_PORT_TEST_LOCK.lock().unwrap();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let server = MockServer::start().await;
+                let mut fixture = Fixture::new();
+                mocks(&server, &fixture, 204, true).await;
+                let config = config();
+                config.cache_mapped_port(44123).unwrap();
+                let owned = start_with_registration(
+                    fixture.attempt.take().unwrap(),
+                    config.clone(),
+                    client(&server),
+                    process_exit::Record::unenrolled,
+                )
+                .await
+                .expect("mock retained creation succeeds");
+                let unpublished = owned.database_publication.is_none();
+                let observed = config.actual_port();
+                owned.rm().await.expect("mock orphan cleanup");
+                let after_cleanup = config.actual_port();
+                config.clear_mapped_port(44123);
+                assert!(
+                    unpublished,
+                    "unjoined creation must not publish a database endpoint"
+                );
+                assert_eq!(
+                    observed, 44123,
+                    "late creation must not replace another initializer"
+                );
+                assert_eq!(
+                    after_cleanup, 44123,
+                    "orphan cleanup must not invalidate that initializer"
+                );
+            });
+    }
+
     #[tokio::test]
     async fn create_id_is_recorded_before_start_and_daemon_mapping_is_observed() {
         let server = MockServer::start().await;
         let mut fixture = Fixture::new();
         mocks(&server, &fixture, 204, true).await;
         let config = config();
-        let owned = start_with_registration(
+        let mut owned = start_with_registration(
             fixture.attempt.take().unwrap(),
-            config,
+            config.clone(),
             client(&server),
             process_exit::Record::unenrolled,
         )
         .await
         .expect("mock lifecycle must succeed");
         assert_eq!(owned.attempt.port, 45678);
+        assert!(owned.database_publication.is_none());
+        {
+            let _guard = crate::config::DATABASE_PORT_TEST_LOCK.lock().unwrap();
+            assert_eq!(owned.publish_database_port(&config).unwrap(), 45678);
+            assert_eq!(config.actual_port(), 45678);
+        }
         assert!(!fixture.context.unknown.load(Ordering::SeqCst));
         owned
             .rm()

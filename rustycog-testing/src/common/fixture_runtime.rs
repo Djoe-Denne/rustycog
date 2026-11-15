@@ -795,6 +795,18 @@ pub struct OwnedContainer {
     database_publication: Option<rustycog::config::DatabaseConfig>,
 }
 impl OwnedContainer {
+    pub(super) fn publish_database_port(
+        &mut self,
+        config: &rustycog::config::DatabaseConfig,
+    ) -> Result<u16, String> {
+        let mapped = self.attempt.port;
+        config
+            .cache_mapped_port(mapped)
+            .map_err(|_| "PostgreSQL mapping publication refused")?;
+        self.database_publication = Some(config.clone());
+        Ok(mapped)
+    }
+
     pub async fn mapped_port(
         &self,
         internal: testcontainers::core::ContainerPort,

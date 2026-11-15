@@ -140,6 +140,8 @@ const fn default_db_port() -> u16 {
 
 /// Global cache for resolved random ports to ensure consistency
 static PORT_CACHE: OnceLock<Arc<Mutex<HashMap<String, u16>>>> = OnceLock::new();
+#[cfg(test)]
+pub(crate) static DATABASE_PORT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl DatabaseConfig {
     /// Construct the primary database URL from components
@@ -1594,9 +1596,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{DatabaseConfig, SqsConfig, PORT_CACHE};
+    use super::{DatabaseConfig, SqsConfig, DATABASE_PORT_TEST_LOCK, PORT_CACHE};
     use std::collections::HashMap;
-    static DATABASE_PORT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn database_port_cache_reset_preserves_unrelated_fixture_ports() {

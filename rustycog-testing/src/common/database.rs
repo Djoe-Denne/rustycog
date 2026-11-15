@@ -147,12 +147,27 @@ async fn get_or_create_test_container() -> Result<Arc<TestDatabaseContainer>, Db
     let attempt = super::fixture_runtime::Attempt::prepare_postgres(db_config.port)
         .await
         .map_err(DbErr::Custom)?;
-    let container = attempt
+    let mut container = attempt
         .start_postgres(db_config.clone())
         .await
         .map_err(|e| DbErr::Custom(format!("Failed to start container: {e}")))?;
 
-    let host_port = db_config.actual_port(); // Already published from the daemon, never probed here.
+    // Publish only after joining creation, while the singleton mutex is held.
+    // An orphaned creation must never overwrite another initializer's mapping.
+    let host_port = match container.publish_database_port(&db_config) {
+        Ok(port) => port,
+        Err(error) => {
+            let cleanup = container.rm().await;
+            return Err(DbErr::Custom(format!(
+                "{error}; exact-ID cleanup={}",
+                if cleanup.is_ok() {
+                    "complete"
+                } else {
+                    "failed"
+                }
+            )));
+        }
+    };
     let database_url = format!(
         "postgres://{}:{}@{}:{}/{}",
         db_config.creds.username, db_config.creds.password, endpoint.host, host_port, db_config.db

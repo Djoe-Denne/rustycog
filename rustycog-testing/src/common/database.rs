@@ -11,6 +11,7 @@ use rustycog::db::DbConnectionPool;
 use sea_orm::{Database, DatabaseConnection, DbErr};
 use std::sync::Arc;
 use std::sync::OnceLock;
+use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -142,32 +143,34 @@ async fn get_or_create_test_container() -> Result<Arc<TestDatabaseContainer>, Db
     // Load test configuration to get database settings
     let db_config = create_base_test_config()?;
 
-    // Zero stays zero until Docker allocates/binds the actual published port.
-    // Fixed explicit ports remain exact; do not probe/release a native socket.
-    let attempt = super::fixture_runtime::Attempt::prepare_postgres(db_config.port)
+    // Determine the port to use
+    let host_port = if db_config.port == 0 {
+        // Use a random available port
+        db_config.actual_port()
+    } else {
+        db_config.port
+    };
+
+    // Create PostgreSQL container using GenericImage with configuration-based settings
+    let attempt = super::fixture_runtime::Attempt::prepare("postgres", host_port)
         .await
         .map_err(DbErr::Custom)?;
-    let mut container = attempt
-        .start_postgres(db_config.clone())
+    let postgres_image = GenericImage::new("postgres", "15-alpine")
+        .with_env_var("POSTGRES_DB", &db_config.db)
+        .with_env_var("POSTGRES_USER", &db_config.creds.username)
+        .with_env_var("POSTGRES_PASSWORD", &db_config.creds.password)
+        .with_container_name(attempt.name())
+        .with_mapped_port(host_port, testcontainers::core::ContainerPort::Tcp(5432)); // Map host port to container port 5432
+
+    let container = attempt
+        .start(postgres_image.start())
         .await
         .map_err(|e| DbErr::Custom(format!("Failed to start container: {e}")))?;
 
-    // Publish only after joining creation, while the singleton mutex is held.
-    // An orphaned creation must never overwrite another initializer's mapping.
-    let host_port = match container.publish_database_port(&db_config) {
-        Ok(port) => port,
-        Err(error) => {
-            let cleanup = container.rm().await;
-            return Err(DbErr::Custom(format!(
-                "{error}; exact-ID cleanup={}",
-                if cleanup.is_ok() {
-                    "complete"
-                } else {
-                    "failed"
-                }
-            )));
-        }
-    };
+    let host_port = container
+        .mapped_port(testcontainers::core::ContainerPort::Tcp(5432))
+        .await
+        .map_err(DbErr::Custom)?;
     let database_url = format!(
         "postgres://{}:{}@{}:{}/{}",
         db_config.creds.username, db_config.creds.password, endpoint.host, host_port, db_config.db
@@ -177,12 +180,8 @@ async fn get_or_create_test_container() -> Result<Arc<TestDatabaseContainer>, Db
     // Do not log the connection URL, which contains credentials.
 
     // Wait for database to be ready
-    let container = super::fixture_runtime::finish_postgres_readiness(
-        container,
-        wait_for_database(&database_url),
-    )
-    .await
-    .map_err(DbErr::Custom)?;
+    wait_for_database(&database_url).await?;
+    container.ready().map_err(DbErr::Custom)?;
 
     let test_container = Arc::new(TestDatabaseContainer {
         container,

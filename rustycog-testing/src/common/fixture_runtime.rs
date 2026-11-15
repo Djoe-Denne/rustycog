@@ -12,16 +12,10 @@ use std::{
 use testcontainers::{ContainerAsync, GenericImage};
 use tokio::task::JoinHandle;
 
-#[path = "fixture_runtime/container_handle.rs"]
-mod container_handle;
-#[path = "fixture_runtime/postgres.rs"]
-mod postgres;
 #[path = "fixture_runtime/process_exit.rs"]
 mod process_exit;
 #[path = "fixture_runtime/start_diagnostic.rs"]
 mod start_diagnostic;
-use container_handle::ContainerHandle;
-pub(super) use postgres::finish_readiness as finish_postgres_readiness;
 
 type StartResult = Result<OwnedContainer, String>;
 type Task = Arc<Slot>;
@@ -263,9 +257,6 @@ where
         > + Send
         + 'static,
 {
-    if port == 0 {
-        return Err("service-local fixed fixture port must be nonzero".into());
-    }
     Attempt::prepare_named(role, port, Some(name))
         .await?
         .start(create)
@@ -337,21 +328,12 @@ pub struct Attempt {
 }
 impl Attempt {
     pub async fn prepare(role: &str, port: u16) -> Result<Self, String> {
-        if port == 0 {
-            return Err("fixed fixture port must be nonzero".into());
-        }
         Self::prepare_named(role, port, None).await
-    }
-
-    pub(super) async fn prepare_postgres(port: u16) -> Result<Self, String> {
-        Self::prepare_named("postgres", port, None).await
     }
 
     async fn prepare_named(role: &str, port: u16, name: Option<&str>) -> Result<Self, String> {
         let context = context()?;
-        if port != 0 {
-            context.endpoint.authority(port)?;
-        }
+        context.endpoint.authority(port)?;
         process_exit::arm()?;
         if role.is_empty()
             || role.len() > 24
@@ -463,76 +445,6 @@ impl Attempt {
             > + Send
             + 'static,
     {
-        self.supervise(move |attempt| async move {
-            match create.await {
-                Ok(container) => {
-                    let id = container.id().to_string();
-                    if id.is_empty() {
-                        attempt.context.unknown(
-                            attempt.number,
-                            &attempt.role,
-                            &attempt.name,
-                            "unknown_empty_id",
-                            attempt.port,
-                        );
-                        return Err("fixture returned no ID; cleanup INCONCLUSIVE".into());
-                    }
-                    let exit_record = process_exit::track(&attempt, &id)?;
-                    let owned = OwnedContainer {
-                        container: Some(ContainerHandle::Testcontainers(container)),
-                        attempt,
-                        id,
-                        removed_confirmed: false,
-                        exit_record,
-                        database_publication: None,
-                    };
-                    owned.attempt.context.event(
-                        owned.attempt.number,
-                        &owned.attempt.role,
-                        &owned.attempt.name,
-                        Some(&owned.id),
-                        "created",
-                        owned.attempt.port,
-                    )?;
-                    Ok(owned)
-                }
-                Err(error) => {
-                    attempt.context.unknown(
-                        attempt.number,
-                        &attempt.role,
-                        &attempt.name,
-                        "unknown_opaque_start_failure",
-                        attempt.port,
-                    );
-                    Err(format!(
-                        "opaque fixture start failure; identity UNKNOWN; {}",
-                        start_diagnostic::describe(&error)
-                    ))
-                }
-            }
-        })
-        .await
-    }
-
-    pub(super) async fn start_postgres(
-        self,
-        config: rustycog::config::DatabaseConfig,
-    ) -> StartResult {
-        self.supervise(move |attempt| async move {
-            let client = testcontainers::core::client::docker_client_instance()
-                .await
-                .map_err(|_| "PostgreSQL Docker client unavailable")?;
-            postgres::ensure_image(&client).await?;
-            postgres::start(attempt, config, client).await
-        })
-        .await
-    }
-
-    async fn supervise<Make, F>(self, create: Make) -> StartResult
-    where
-        Make: FnOnce(Self) -> F + Send + 'static,
-        F: Future<Output = StartResult> + Send + 'static,
-    {
         let context = self.context.clone();
         let slot = Arc::new(Slot {
             active: AtomicBool::new(true),
@@ -549,7 +461,53 @@ impl Attempt {
                 .get_or_init(|| Mutex::new(Vec::new()))
                 .lock()
                 .map_err(|_| "fixture supervisor lock poisoned")?;
-            let task = tokio::spawn(create(self));
+            let task = tokio::spawn(async move {
+                match create.await {
+                    Ok(container) => {
+                        let id = container.id().to_string();
+                        if id.is_empty() {
+                            self.context.unknown(
+                                self.number,
+                                &self.role,
+                                &self.name,
+                                "unknown_empty_id",
+                                self.port,
+                            );
+                            return Err("fixture returned no ID; cleanup INCONCLUSIVE".into());
+                        }
+                        let exit_record = process_exit::track(&self, &id)?;
+                        let owned = OwnedContainer {
+                            container: Some(container),
+                            attempt: self,
+                            id,
+                            removed_confirmed: false,
+                            exit_record,
+                        };
+                        owned.attempt.context.event(
+                            owned.attempt.number,
+                            &owned.attempt.role,
+                            &owned.attempt.name,
+                            Some(&owned.id),
+                            "created",
+                            owned.attempt.port,
+                        )?;
+                        Ok(owned)
+                    }
+                    Err(error) => {
+                        self.context.unknown(
+                            self.number,
+                            &self.role,
+                            &self.name,
+                            "unknown_opaque_start_failure",
+                            self.port,
+                        );
+                        Err(format!(
+                            "opaque fixture start failure; identity UNKNOWN; {}",
+                            start_diagnostic::describe(&error)
+                        ))
+                    }
+                }
+            });
             *slot
                 .task
                 .try_lock()
@@ -787,26 +745,13 @@ fn process_exit_creations_unresolved() -> bool {
 }
 
 pub struct OwnedContainer {
-    container: Option<ContainerHandle>,
+    container: Option<ContainerAsync<GenericImage>>,
     attempt: Attempt,
     id: String,
     removed_confirmed: bool,
     exit_record: Arc<process_exit::Record>,
-    database_publication: Option<rustycog::config::DatabaseConfig>,
 }
 impl OwnedContainer {
-    pub(super) fn publish_database_port(
-        &mut self,
-        config: &rustycog::config::DatabaseConfig,
-    ) -> Result<u16, String> {
-        let mapped = self.attempt.port;
-        config
-            .cache_mapped_port(mapped)
-            .map_err(|_| "PostgreSQL mapping publication refused")?;
-        self.database_publication = Some(config.clone());
-        Ok(mapped)
-    }
-
     pub async fn mapped_port(
         &self,
         internal: testcontainers::core::ContainerPort,
@@ -864,22 +809,17 @@ impl OwnedContainer {
     pub async fn rm(mut self) -> Result<(), String> {
         ensure_exact_owned_id(
             &self.id,
-            self.container.as_ref().map(ContainerHandle::id),
+            self.container.as_ref().map(ContainerAsync::id),
             false,
         )?;
-        let requested = self.attempt.context.event(
+        self.attempt.context.event(
             self.attempt.number,
             &self.attempt.role,
             &self.attempt.name,
             Some(&self.id),
             "owned_teardown_requested",
             self.attempt.port,
-        );
-        // A ledger failure must not discard a create-response ID or prevent
-        // its safe teardown; retain the error after attempting exact-ID cleanup.
-        if let Some(config) = self.database_publication.take() {
-            config.clear_mapped_port(self.attempt.port);
-        }
+        )?;
         let container = self
             .container
             .take()
@@ -894,7 +834,7 @@ impl OwnedContainer {
             self.removed_confirmed = true;
             self.exit_record.removed();
         }
-        let completed = self.attempt.context.event(
+        self.attempt.context.event(
             self.attempt.number,
             &self.attempt.role,
             &self.attempt.name,
@@ -905,9 +845,7 @@ impl OwnedContainer {
                 "teardown_failed"
             },
             self.attempt.port,
-        );
-        requested?;
-        completed?;
+        )?;
         result
     }
 }
@@ -923,9 +861,6 @@ fn ensure_exact_owned_id(
 }
 impl Drop for OwnedContainer {
     fn drop(&mut self) {
-        if let Some(config) = self.database_publication.take() {
-            config.clear_mapped_port(self.attempt.port);
-        }
         if !self.removed_confirmed {
             // Includes cancellation while consuming rm(): taking the handle
             // is not evidence that the daemon completed its removal.

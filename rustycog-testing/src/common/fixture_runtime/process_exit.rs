@@ -35,11 +35,6 @@ pub(super) struct Record {
 }
 
 impl Record {
-    #[cfg(test)]
-    pub(super) fn unenrolled(attempt: &Attempt, id: &str) -> Result<Arc<Self>, String> {
-        Self::new(attempt, id).map(Arc::new)
-    }
-
     fn new(attempt: &Attempt, id: &str) -> Result<Self, String> {
         if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("process exit guard requires a full creation-returned container ID".into());

@@ -312,6 +312,7 @@ mod tests {
     fn records(path: &Path, roles: &[&str]) -> Vec<Arc<Record>> {
         let context = Arc::new(Context {
             run: "exit-unit".into(),
+            incarnation: uuid::Uuid::nil(),
             endpoint: Endpoint {
                 host: "127.0.0.1".into(),
             },
@@ -628,6 +629,7 @@ mod tests {
         let path = dir.path().join("ledger");
         let context = Arc::new(Context {
             run: "exit-unit-unresolved".into(),
+            incarnation: uuid::Uuid::nil(),
             endpoint: Endpoint {
                 host: "127.0.0.1".into(),
             },

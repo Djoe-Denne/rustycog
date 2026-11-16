@@ -93,12 +93,21 @@ impl Endpoint {
 
 struct Context {
     run: String,
+    incarnation: uuid::Uuid,
     endpoint: Endpoint,
     ledger: Mutex<std::fs::File>,
     ids: Mutex<HashMap<u64, String>>,
     unknown: AtomicBool,
 }
 impl Context {
+    fn fixture_name(&self, role: &str, process_id: u32, attempt: u64) -> String {
+        format!(
+            "{role}-{}-{process_id}-{}-{attempt}",
+            self.run,
+            self.incarnation.simple()
+        )
+    }
+
     fn event(
         &self,
         attempt: u64,
@@ -185,10 +194,11 @@ fn context() -> Result<Arc<Context>, String> {
             if !dir.is_absolute() || !dir.is_dir() {
                 return Err("ledger directory must already exist and be absolute".into());
             }
-            let ledger =
-                create_fixture_ledger(&dir, &run, std::process::id(), uuid::Uuid::new_v4())?;
+            let incarnation = uuid::Uuid::new_v4();
+            let ledger = create_fixture_ledger(&dir, &run, std::process::id(), incarnation)?;
             Ok(Arc::new(Context {
                 run,
+                incarnation,
                 endpoint,
                 ledger: Mutex::new(ledger),
                 ids: Mutex::new(HashMap::new()),
@@ -356,7 +366,7 @@ impl Attempt {
             }
             name.to_string()
         } else {
-            format!("{role}-{}-{}-{number}", context.run, std::process::id())
+            context.fixture_name(role, std::process::id(), number)
         };
         let docker = testcontainers::core::client::docker_client_instance()
             .await
@@ -894,8 +904,9 @@ mod safety_tests {
             uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
             uuid::Uuid::from_u128(0x22222222_2222_4222_8222_222222222222),
         ];
-        let make_context = |ledger| Context {
+        let make_context = |ledger, incarnation| Context {
             run: run.into(),
+            incarnation,
             endpoint: Endpoint::parse("local", None).unwrap(),
             ledger: Mutex::new(ledger),
             ids: Mutex::new(HashMap::new()),
@@ -904,17 +915,12 @@ mod safety_tests {
         let first = make_context(
             create_fixture_ledger(dir.path(), run, pid, incarnations[0])
                 .expect("new incarnation must not reuse the legacy ledger"),
+            incarnations[0],
         );
         let first_id = "a".repeat(64);
+        let first_name = first.fixture_name("postgres", pid, 1);
         first
-            .event(
-                1,
-                "postgres",
-                "diagnostic-only",
-                Some(&first_id),
-                "created",
-                5432,
-            )
+            .event(1, "postgres", &first_name, Some(&first_id), "created", 5432)
             .unwrap();
         let first_path = dir.path().join(format!(
             "fixture-{run}-{pid}-{}.jsonl",
@@ -924,13 +930,32 @@ mod safety_tests {
         let second = make_context(
             create_fixture_ledger(dir.path(), run, pid, incarnations[1])
                 .expect("another incarnation must not reuse the earlier ledger"),
+            incarnations[1],
         );
         let second_id = "b".repeat(64);
+        let second_name = second.fixture_name("postgres", pid, 1);
+        assert_ne!(
+            first_name, second_name,
+            "reused run/PID/attempt must not reuse a container name across incarnations"
+        );
+        assert_eq!(first_name, first.fixture_name("postgres", pid, 1));
+        assert_ne!(first_name, first.fixture_name("postgres", pid, 2));
+        assert_ne!(first_name, first.fixture_name("openfga", pid, 1));
+        let mut inventory = Inventory::default();
+        inventory.include_container(
+            &[format!("/{first_name}")],
+            &[5432],
+            Some("exited"),
+            Some(&exited_state()),
+        );
+        assert!(check_collision(&inventory, &first_name, 5432).is_err());
+        assert!(check_collision(&inventory, &second_name, 5432).is_ok());
+        assert_eq!(inventory.names, vec![format!("/{first_name}")]);
         second
             .event(
                 1,
                 "postgres",
-                "diagnostic-only",
+                &second_name,
                 Some(&second_id),
                 "created",
                 5432,
@@ -943,7 +968,10 @@ mod safety_tests {
         assert_eq!(std::fs::read(&legacy_path).unwrap(), legacy_bytes);
         assert_eq!(std::fs::read(&first_path).unwrap(), first_bytes);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
-        for (path, expected_id) in [(first_path, first_id), (second_path, second_id)] {
+        for (path, expected_id, expected_name) in [
+            (first_path, first_id, first_name),
+            (second_path, second_id, second_name),
+        ] {
             let text = std::fs::read_to_string(path).unwrap();
             let records: Vec<serde_json::Value> = text
                 .lines()
@@ -954,7 +982,31 @@ mod safety_tests {
             assert_eq!(records[0]["run_id"], run);
             assert_eq!(records[0]["process_id"], pid);
             assert_eq!(records[0]["container_id"], expected_id);
+            assert_eq!(records[0]["container_name"], expected_name);
         }
+    }
+
+    #[test]
+    fn fixture_name_fits_validated_input_bounds() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = "r".repeat(40);
+        let incarnation = uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111);
+        let context = Context {
+            ledger: Mutex::new(
+                create_fixture_ledger(dir.path(), &run, u32::MAX, incarnation).unwrap(),
+            ),
+            run,
+            incarnation,
+            endpoint: Endpoint::parse("local", None).unwrap(),
+            ids: Mutex::new(HashMap::new()),
+            unknown: AtomicBool::new(false),
+        };
+        let name = context.fixture_name(&"p".repeat(24), u32::MAX, 127);
+        assert!(name.len() <= 128);
+        assert!(name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')));
+        assert!(name.contains(&incarnation.simple().to_string()));
     }
 
     #[test]
@@ -1176,6 +1228,7 @@ mod safety_tests {
         let path = dir.path().join("ledger.jsonl");
         let context = Arc::new(Context {
             run: "pure-start-diagnostic".into(),
+            incarnation: uuid::Uuid::nil(),
             endpoint: Endpoint::parse("local", None).unwrap(),
             ledger: Mutex::new(std::fs::File::create(&path).unwrap()),
             ids: Mutex::new(HashMap::new()),
@@ -1340,6 +1393,7 @@ mod safety_tests {
         let path = dir.path().join("ledger.jsonl");
         let context = Context {
             run: "pure-test".into(),
+            incarnation: uuid::Uuid::nil(),
             endpoint: Endpoint::parse("local", None).unwrap(),
             ledger: Mutex::new(std::fs::File::create(&path).unwrap()),
             ids: Mutex::new(HashMap::new()),

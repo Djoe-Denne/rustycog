@@ -142,5 +142,67 @@ async fn a_stalled_sqs_request_is_bounded_by_the_readiness_deadline() {
     )
     .await
     .expect("the fixture must enforce its own shorter readiness deadline");
-    assert!(readiness.is_err());
+    let error = readiness.unwrap_err().to_string();
+    assert!(error.contains("request_pending=true"));
+    assert!(error.contains("last_error=no_completed_response"));
+    assert!(error.contains("last_request_ms="));
+}
+
+#[tokio::test]
+async fn stalled_request_retains_the_previous_http_failure_without_body() {
+    let server = MockServer::start().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    Mock::given(any())
+        .respond_with(move |_: &wiremock::Request| {
+            if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(503).set_body_string("private-readiness-sentinel")
+            } else {
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({}))
+                    .set_delay(Duration::from_secs(5))
+            }
+        })
+        .mount(&server)
+        .await;
+    let error = TestSqs::wait_for_sqs_ready(
+        &client(&server).await,
+        Duration::from_secs(1),
+        Duration::from_millis(10),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(error.contains("after 2 attempts"));
+    assert!(error.contains("request_pending=true"));
+    assert!(error.contains("HTTP_503"));
+    assert!(error.contains("elapsed_ms="));
+    assert!(!error.contains("private-readiness-sentinel"));
+    assert!(!error.contains(&server.uri()));
+    assert_only_list_queues(&server).await;
+}
+
+#[tokio::test]
+async fn permanent_rejection_reports_category_without_provider_message() {
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(403).set_body_json(
+            serde_json::json!({"__type": "AccessDenied", "message": "private-provider-sentinel"}),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let error = TestSqs::wait_for_sqs_ready(
+        &client(&server).await,
+        Duration::from_secs(1),
+        Duration::from_millis(10),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("HTTP 403"));
+    assert!(error.contains("service_error"));
+    assert!(!error.contains("private-provider-sentinel"));
+    assert!(!error.contains(&server.uri()));
 }

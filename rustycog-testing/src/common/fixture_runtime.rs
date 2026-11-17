@@ -762,6 +762,31 @@ pub struct OwnedContainer {
     exit_record: Arc<process_exit::Record>,
 }
 impl OwnedContainer {
+    /// Closed, read-only failure context; no logs, config, health output or URLs.
+    pub(crate) async fn diagnostic_state(&self) -> String {
+        let state = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let docker = testcontainers::core::client::docker_client_instance()
+                .await
+                .map_err(|_| ())?;
+            let inspect = docker
+                .inspect_container(
+                    &self.id,
+                    None::<testcontainers::bollard::container::InspectContainerOptions>,
+                )
+                .await
+                .map_err(|_| ())?;
+            inspect.state.ok_or(())
+        })
+        .await;
+        match state {
+            Ok(Ok(state)) => project_container_diagnostic(&self.id, &state).to_string(),
+            Ok(Err(())) => {
+                serde_json::json!({"id": self.id, "observation": "unavailable"}).to_string()
+            }
+            Err(_) => serde_json::json!({"id": self.id, "observation": "timeout"}).to_string(),
+        }
+    }
+
     pub async fn mapped_port(
         &self,
         internal: testcontainers::core::ContainerPort,
@@ -857,6 +882,41 @@ impl OwnedContainer {
             self.attempt.port,
         )?;
         result
+    }
+}
+
+fn project_container_diagnostic(
+    id: &str,
+    state: &testcontainers::bollard::models::ContainerState,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "status": state.status,
+        "running": state.running,
+        "oom_killed": state.oom_killed,
+        "exit_code": state.exit_code,
+    })
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    #[test]
+    fn container_failure_projection_excludes_private_inspect_fields() {
+        let state = serde_json::from_value(serde_json::json!({
+            "Status": "exited", "Running": false, "OOMKilled": true, "ExitCode": 137,
+            "Error": "private-state-sentinel",
+            "Health": {"Status": "unhealthy", "Log": [{"Output": "private-health-sentinel"}]}
+        }))
+        .unwrap();
+        let projected = super::project_container_diagnostic("owned-id", &state);
+        assert_eq!(
+            projected,
+            serde_json::json!({
+                "id": "owned-id", "status": "exited", "running": false, "oom_killed": true, "exit_code": 137,
+            })
+        );
+        assert!(!projected.to_string().contains("private-state-sentinel"));
+        assert!(!projected.to_string().contains("private-health-sentinel"));
     }
 }
 fn ensure_exact_owned_id(

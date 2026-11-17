@@ -104,7 +104,12 @@ impl TestSqs {
         let client = Self::create_sqs_client(&endpoint_url, &region).await?;
 
         // Wait for LocalStack to be ready
-        Self::wait_for_localstack(&client).await?;
+        if let Err(error) = Self::wait_for_localstack(&client).await {
+            // Diagnostic inspection is read-only and separately bounded. Never
+            // dump inspect responses, URLs, credentials or LocalStack logs.
+            let state = container.container.diagnostic_state().await;
+            return Err(format!("{error}; fixture={state}").into());
+        }
 
         // Create test queues using configured queue names
         let mut queue_urls = Self::create_test_queues(&client, &sqs_config).await?;
@@ -157,18 +162,22 @@ impl TestSqs {
         budget: Duration,
         interval: Duration,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let deadline = tokio::time::Instant::now() + budget;
+        let started = tokio::time::Instant::now();
+        let deadline = started + budget;
         let mut attempts = 0;
-        let mut last_error = "no ListQueues response".to_owned();
+        let mut last_error = "no_completed_response".to_owned();
+        let mut last_request_ms = 0;
 
         loop {
             if tokio::time::Instant::now() >= deadline {
                 return Err(format!(
-                    "LocalStack SQS ListQueues readiness deadline exceeded after {attempts} attempts: {last_error}"
+                    "LocalStack SQS ListQueues readiness deadline exceeded after {attempts} attempts; elapsed_ms={}; last_request_ms={last_request_ms}; request_pending=false; last_error={last_error}",
+                    started.elapsed().as_millis()
                 )
                 .into());
             }
             attempts += 1;
+            let request_started = tokio::time::Instant::now();
             match tokio::time::timeout_at(deadline, client.list_queues().max_results(1).send())
                 .await
             {
@@ -177,21 +186,46 @@ impl TestSqs {
                     return Ok(());
                 }
                 Ok(Err(error)) => {
+                    last_request_ms = request_started.elapsed().as_millis();
+                    // Categories only: SDK Display/source chains can include
+                    // request URIs, provider messages or response bodies.
+                    let category = match &error {
+                        aws_sdk_sqs::error::SdkError::DispatchFailure(failure)
+                            if failure.is_timeout() =>
+                        {
+                            "transport_timeout"
+                        }
+                        aws_sdk_sqs::error::SdkError::DispatchFailure(failure)
+                            if failure.is_io() =>
+                        {
+                            "transport_io"
+                        }
+                        aws_sdk_sqs::error::SdkError::DispatchFailure(_) => "transport_other",
+                        aws_sdk_sqs::error::SdkError::TimeoutError(_) => "sdk_timeout",
+                        aws_sdk_sqs::error::SdkError::ResponseError(_) => "invalid_response",
+                        aws_sdk_sqs::error::SdkError::ServiceError(_) => "service_error",
+                        aws_sdk_sqs::error::SdkError::ConstructionFailure(_) => {
+                            "request_construction"
+                        }
+                        _ => "unclassified",
+                    };
+                    last_error = category.to_owned();
                     if let Some(response) = error.raw_response() {
                         let status = response.status().as_u16();
+                        last_error = format!("{category}:HTTP_{status}");
                         if status < 500 && status != 429 {
                             return Err(format!(
-                                "LocalStack SQS ListQueues readiness rejected an invalid response (HTTP {status})"
+                                "LocalStack SQS ListQueues readiness rejected an invalid response (HTTP {status}); attempts={attempts}; last_request_ms={last_request_ms}; last_error={last_error}"
                             )
                             .into());
                         }
                     }
-                    last_error = error.to_string();
                     debug!("LocalStack SQS API is not ready: {}", last_error);
                 }
                 Err(_) => {
                     return Err(format!(
-                        "LocalStack SQS ListQueues readiness deadline exceeded after {attempts} attempts"
+                        "LocalStack SQS ListQueues readiness deadline exceeded after {attempts} attempts; elapsed_ms={}; last_request_ms={}; request_pending=true; last_error={last_error}",
+                        started.elapsed().as_millis(), request_started.elapsed().as_millis()
                     )
                     .into());
                 }

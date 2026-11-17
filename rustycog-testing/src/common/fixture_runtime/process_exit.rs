@@ -572,16 +572,16 @@ mod tests {
         // Hermetic lifecycle test: IDs/backend are synthetic, NOT Docker
         // evidence. The real campaign's mandatory F1 finally reconciles the
         // fixture ledger with Engine as its compensating control for ExitProcess.
+        // This module is compiled in both the library and fixture_runtime test
+        // target. Libtest names exclude the crate prefix in either inclusion.
+        let (_, test_module) = module_path!().split_once("::").unwrap();
+        let child_test = format!("{test_module}::child_exit_fixture");
         for (nonzero, fail) in [(false, false), (false, true), (true, false), (true, true)] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("ledger");
             let mut child = std::process::Command::new(std::env::current_exe().unwrap());
             child
-                .args([
-                    "--exact",
-                    "testing::common::fixture_runtime::process_exit::tests::child_exit_fixture",
-                    "--nocapture",
-                ])
+                .args(["--exact", &child_test, "--nocapture"])
                 .env("RUSTYCOG_EXIT_UNIT_LEDGER", &path);
             if nonzero {
                 child.env("RUSTYCOG_EXIT_UNIT_NONZERO", "1");

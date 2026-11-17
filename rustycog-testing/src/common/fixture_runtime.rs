@@ -12,6 +12,7 @@ use std::{
 use testcontainers::{ContainerAsync, GenericImage};
 use tokio::task::JoinHandle;
 
+#[path = "fixture_runtime/observation.rs"]
 mod observation;
 #[path = "fixture_runtime/process_exit.rs"]
 mod process_exit;

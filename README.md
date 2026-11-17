@@ -262,6 +262,21 @@ transient transport/server/throttling failures may recover within that budget,
 while permanent HTTP rejections fail immediately. This does not retry business
 operations or establish an authentication proof.
 
+Before protocol readiness, SQS setup inspects its exact owned container ID with
+a one-second budget. Confirmed exited/dead or absent fixtures retain their first
+terminal diagnostic and fail subsequent setups without another protocol wait
+or automatic recreation. Running, transitional and unknown observations are not
+terminal, and do not replace the existing SQS readiness contract. Ownership and
+explicit cleanup remain unchanged.
+
+The first terminal observation also samples at most 100 log lines, 16 KiB and
+64 frames within one second. Only fixed boolean markers (ready, traceback,
+permission/disk/address/memory-error text) and sample counts are exposed in
+`RUSTYCOG_SQS_TERMINAL`; no raw logs, inspect error/health fields or credentials
+are printed. Markers describe sampled text, not a root-cause determination.
+Cancellation during log collection preserves the first terminal identity with
+`not_completed` diagnostics.
+
 With `test-utils`, `events::sqs_probe::SqsConsumerProbe` can be attached through
 `SqsEventConsumer::with_poll_probe` to one test consumer. It counts receive
 operation starts, results and cancellations, returned-message identity matches,

@@ -12,10 +12,12 @@ use std::{
 use testcontainers::{ContainerAsync, GenericImage};
 use tokio::task::JoinHandle;
 
+mod observation;
 #[path = "fixture_runtime/process_exit.rs"]
 mod process_exit;
 #[path = "fixture_runtime/start_diagnostic.rs"]
 mod start_diagnostic;
+pub(crate) use observation::ContainerObservation;
 
 type StartResult = Result<OwnedContainer, String>;
 type Task = Arc<Slot>;
@@ -762,31 +764,6 @@ pub struct OwnedContainer {
     exit_record: Arc<process_exit::Record>,
 }
 impl OwnedContainer {
-    /// Closed, read-only failure context; no logs, config, health output or URLs.
-    pub(crate) async fn diagnostic_state(&self) -> String {
-        let state = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            let docker = testcontainers::core::client::docker_client_instance()
-                .await
-                .map_err(|_| ())?;
-            let inspect = docker
-                .inspect_container(
-                    &self.id,
-                    None::<testcontainers::bollard::container::InspectContainerOptions>,
-                )
-                .await
-                .map_err(|_| ())?;
-            inspect.state.ok_or(())
-        })
-        .await;
-        match state {
-            Ok(Ok(state)) => project_container_diagnostic(&self.id, &state).to_string(),
-            Ok(Err(())) => {
-                serde_json::json!({"id": self.id, "observation": "unavailable"}).to_string()
-            }
-            Err(_) => serde_json::json!({"id": self.id, "observation": "timeout"}).to_string(),
-        }
-    }
-
     pub async fn mapped_port(
         &self,
         internal: testcontainers::core::ContainerPort,

@@ -11,6 +11,7 @@ use rustycog::events::event::DomainEvent;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+mod terminal;
 #[cfg(test)]
 mod tests;
 use std::sync::Arc;
@@ -27,11 +28,21 @@ static TEST_SQS_CONTAINER: OnceLock<Arc<Mutex<Option<Arc<TestSqsContainer>>>>> =
 /// Test SQS container wrapper
 pub struct TestSqsContainer {
     container: super::fixture_runtime::OwnedContainer,
+    terminal: terminal::TerminalFixture,
     pub endpoint_url: String,
     pub port: u16,
 }
 
 impl TestSqsContainer {
+    async fn check_liveness(&self) -> Result<super::fixture_runtime::ContainerObservation, String> {
+        self.terminal
+            .check(
+                self.container.observe(),
+                self.container.startup_log_categories(),
+            )
+            .await
+    }
+
     /// Stop and remove the container
     pub async fn cleanup(self) {
         info!("Stopping and removing test SQS LocalStack container");
@@ -69,6 +80,8 @@ impl TestSqs {
     /// be created.
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let (container, sqs_config) = get_or_create_test_sqs_container().await?;
+        // A failed cached identity stays owned; never silently replace it.
+        container.check_liveness().await?;
         let host = sqs_config.host.clone();
         let port = sqs_config.actual_port();
         let region = sqs_config.region.clone();
@@ -105,10 +118,10 @@ impl TestSqs {
 
         // Wait for LocalStack to be ready
         if let Err(error) = Self::wait_for_localstack(&client).await {
-            // Diagnostic inspection is read-only and separately bounded. Never
-            // dump inspect responses, URLs, credentials or LocalStack logs.
-            let state = container.container.diagnostic_state().await;
-            return Err(format!("{error}; fixture={state}").into());
+            return match container.check_liveness().await {
+                Ok(observed) => Err(format!("{error}; fixture={}", observed.diagnostic).into()),
+                Err(terminal) => Err(format!("{error}; {terminal}").into()),
+            };
         }
 
         // Create test queues using configured queue names
@@ -755,6 +768,7 @@ async fn start_test_sqs_container(
     Ok((
         Arc::new(TestSqsContainer {
             container: sqs_container,
+            terminal: terminal::TerminalFixture::default(),
             endpoint_url,
             port: sqs_port,
         }),

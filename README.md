@@ -262,6 +262,16 @@ transient transport/server/throttling failures may recover within that budget,
 while permanent HTTP rejections fail immediately. This does not retry business
 operations or establish an authentication proof.
 
+With `test-utils`, `events::sqs_probe::SqsConsumerProbe` can be attached through
+`SqsEventConsumer::with_poll_probe` to one test consumer. It counts receive
+operation starts, results and cancellations, returned-message identity matches,
+body/parse/support failures and handler entry. Snapshots contain numbers only;
+they do not expose message IDs, payloads, receipts or credentials. Cancellation
+while awaiting a receive is distinct from cancelling a suspended handler.
+These are cumulative, non-transactional samples across that consumer's pollers,
+not broker metrics or observations of other consumers. No global tracing state,
+extra broker requests, retry policy or processing behavior is installed.
+
 ## Error Handling Philosophy
 
 RustyCog promotes a structured approach to error handling:

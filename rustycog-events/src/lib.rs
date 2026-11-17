@@ -20,6 +20,8 @@ pub mod event;
 pub mod kafka;
 pub mod no_op;
 pub mod sqs;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod sqs_probe;
 
 use crate::rustycog_config::{KafkaConfig, QueueConfig, SqsConfig};
 use crate::rustycog_core::error::ServiceError;

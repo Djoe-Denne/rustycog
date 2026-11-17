@@ -237,6 +237,7 @@ fn consumer() -> SqsEventConsumer {
         client,
         config: SqsConfig::default(),
         lifecycle: Arc::default(),
+        probe: None,
     }
 }
 
@@ -516,8 +517,14 @@ async fn stop_cancels_blocked_handler_without_acknowledging_message() {
         let _destroyed = destroyed;
         let _owner = owner;
         poll_until_stopped(_owner.stop.subscribe(), &endpoint, || async {
-            SqsEventConsumer::handle_sqs_message(&client, &endpoint, &handler, message.clone())
-                .await;
+            SqsEventConsumer::handle_sqs_message(
+                &client,
+                &endpoint,
+                &handler,
+                message.clone(),
+                None,
+            )
+            .await;
             Ok(())
         })
         .await

@@ -1,4 +1,6 @@
 use super::event::{DomainEvent, EventPublisher};
+#[cfg(any(test, feature = "test-utils"))]
+use super::sqs_probe::SqsConsumerProbe;
 use super::{EventConsumer, EventHandler};
 use crate::rustycog_config::SqsConfig;
 use crate::rustycog_core::error::ServiceError;
@@ -9,6 +11,8 @@ use aws_sdk_sqs::{types::Message, Client, Config};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::future::Future;
+#[cfg(any(test, feature = "test-utils"))]
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
@@ -21,6 +25,9 @@ type SqsBatchEntriesByQueue = HashMap<String, Vec<SqsBatchEntry>>;
 #[cfg(test)]
 #[path = "sqs_lifecycle_tests.rs"]
 mod lifecycle_tests;
+#[cfg(test)]
+#[path = "sqs_probe_tests.rs"]
+mod probe_tests;
 
 /// SQS event publisher implementation
 pub struct SqsEventPublisher {
@@ -463,6 +470,8 @@ pub struct SqsEventConsumer {
     client: Client,
     config: SqsConfig,
     lifecycle: Arc<Mutex<ConsumerLifecycle>>,
+    #[cfg(any(test, feature = "test-utils"))]
+    probe: Option<Arc<SqsConsumerProbe>>,
 }
 
 #[derive(Default)]
@@ -486,6 +495,8 @@ struct RunResources<H> {
     handler: H,
     client: Client,
     queue_urls: Vec<String>,
+    #[cfg(any(test, feature = "test-utils"))]
+    probe: Option<Arc<SqsConsumerProbe>>,
     lease: Arc<ConsumerRun>,
 }
 
@@ -586,7 +597,17 @@ impl SqsEventConsumer {
             client,
             config,
             lifecycle: Arc::default(),
+            #[cfg(any(test, feature = "test-utils"))]
+            probe: None,
         })
+    }
+
+    /// Attach test counters to this consumer only, without global tracing state.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn with_poll_probe(mut self, probe: Arc<SqsConsumerProbe>) -> Self {
+        self.probe = Some(probe);
+        self
     }
 
     fn configured_queue_urls(&self) -> Vec<String> {
@@ -663,18 +684,25 @@ impl SqsEventConsumer {
         client: &Client,
         queue_url: &str,
         handler: &H,
+        #[cfg(any(test, feature = "test-utils"))] probe: Option<&SqsConsumerProbe>,
     ) -> Result<(), ServiceError>
     where
         H: EventHandler + Send + Sync,
     {
-        let response = match client
+        #[cfg(any(test, feature = "test-utils"))]
+        let attempt = probe.map(SqsConsumerProbe::begin_receive);
+        let received = client
             .receive_message()
             .queue_url(queue_url)
             .max_number_of_messages(10) // SQS max
             .wait_time_seconds(2) // Long polling
             .send()
-            .await
-        {
+            .await;
+        #[cfg(any(test, feature = "test-utils"))]
+        if let Some(attempt) = attempt {
+            attempt.finish(received.is_ok());
+        }
+        let response = match received {
             Ok(response) => response,
             Err(e) => {
                 error!(
@@ -693,24 +721,62 @@ impl SqsEventConsumer {
             return Ok(());
         };
 
+        #[cfg(any(test, feature = "test-utils"))]
+        if let Some(probe) = probe {
+            probe
+                .messages_returned
+                .fetch_add(messages.len() as u64, Ordering::SeqCst);
+        }
         for message in messages {
-            Self::handle_sqs_message(client, queue_url, handler, message).await;
+            Self::handle_sqs_message(
+                client,
+                queue_url,
+                handler,
+                message,
+                #[cfg(any(test, feature = "test-utils"))]
+                probe,
+            )
+            .await;
         }
 
         Ok(())
     }
 
-    async fn handle_sqs_message<H>(client: &Client, queue_url: &str, handler: &H, message: Message)
-    where
+    async fn handle_sqs_message<H>(
+        client: &Client,
+        queue_url: &str,
+        handler: &H,
+        message: Message,
+        #[cfg(any(test, feature = "test-utils"))] probe: Option<&SqsConsumerProbe>,
+    ) where
         H: EventHandler + Send + Sync,
     {
+        #[cfg(any(test, feature = "test-utils"))]
+        if let Some(probe) = probe {
+            if message.message_id().is_none() {
+                probe.messages_without_id.fetch_add(1, Ordering::SeqCst);
+            }
+            if probe.is_expected(message.message_id()) {
+                probe
+                    .expected_message_returned
+                    .fetch_add(1, Ordering::SeqCst);
+            }
+        }
         let Some(body) = message.body() else {
+            #[cfg(any(test, feature = "test-utils"))]
+            if let Some(probe) = probe {
+                probe.missing_body.fetch_add(1, Ordering::SeqCst);
+            }
             return;
         };
 
         let event = match Self::parse_message_body(body) {
             Ok(event) => event,
             Err(e) => {
+                #[cfg(any(test, feature = "test-utils"))]
+                if let Some(probe) = probe {
+                    probe.parse_failed.fetch_add(1, Ordering::SeqCst);
+                }
                 warn!(
                     error = %e,
                     message_id = message.message_id().unwrap_or("unknown"),
@@ -722,6 +788,10 @@ impl SqsEventConsumer {
 
         let event_type = event.event_type().to_string();
         if !handler.supports_event_type(&event_type) {
+            #[cfg(any(test, feature = "test-utils"))]
+            if let Some(probe) = probe {
+                probe.unsupported.fetch_add(1, Ordering::SeqCst);
+            }
             debug!(
                 event_type = %event_type,
                 "Handler doesn't support event type, skipping"
@@ -729,6 +799,15 @@ impl SqsEventConsumer {
             return;
         }
 
+        #[cfg(any(test, feature = "test-utils"))]
+        if let Some(probe) = probe {
+            probe.handler_entered.fetch_add(1, Ordering::SeqCst);
+            if probe.is_expected(message.message_id()) {
+                probe
+                    .expected_handler_entered
+                    .fetch_add(1, Ordering::SeqCst);
+            }
+        }
         if let Err(e) = handler.handle_event(event).await {
             warn!(
                 error = %e,
@@ -788,6 +867,8 @@ impl EventConsumer for SqsEventConsumer {
             handler,
             client: self.client.clone(),
             queue_urls,
+            #[cfg(any(test, feature = "test-utils"))]
+            probe: self.probe.clone(),
             lease: ConsumerLifecycle::begin(&self.lifecycle)?,
         });
         let mut tasks = JoinSet::new();
@@ -801,6 +882,8 @@ impl EventConsumer for SqsEventConsumer {
                         &resources.client,
                         queue_url,
                         &resources.handler,
+                        #[cfg(any(test, feature = "test-utils"))]
+                        resources.probe.as_deref(),
                     )
                 })
                 .await
@@ -1045,6 +1128,7 @@ mod tests {
             client: test_client(),
             config,
             lifecycle: Arc::default(),
+            probe: None,
         };
 
         let queue_urls = consumer.configured_queue_urls();

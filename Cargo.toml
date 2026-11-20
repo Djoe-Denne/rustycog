@@ -11,7 +11,7 @@ homepage = "https://github.com/Djoe-Denne/rustycog"
 documentation = "https://github.com/Djoe-Denne/rustycog#readme"
 keywords = ["rustycog", "microservices", "sdk", "ddd", "hexagonal"]
 categories = ["development-tools", "asynchronous"]
-rust-version = "1.84"
+rust-version = "1.88"
 include = [
     "Cargo.toml",
     "LICENSE-APACHE",
@@ -196,7 +196,8 @@ anyhow = { version = "1", optional = true }
 async-trait = { version = "0.1.92", optional = true }
 aws-config = { version = "1", optional = true }
 aws-credential-types = { version = "1", optional = true }
-aws-sdk-sqs = { version = "1", optional = true }
+# Use the modern HTTPS connector without enabling the legacy Rustls 0.21 stack.
+aws-sdk-sqs = { version = "1.98", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"], optional = true }
 axum = { version = "0.8", optional = true }
 axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
 axum-valid = { version = "0.23", features = ["validator", "422", "into_json"], optional = true }
@@ -208,7 +209,7 @@ ctrlc = { version = "3.4", optional = true }
 dotenvy = { version = "0.15", optional = true }
 futures = { version = "0.3", optional = true }
 inventory = { version = "0.3", optional = true }
-jsonwebtoken = { version = "9", optional = true }
+jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"], optional = true }
 hyper = { version = "1", features = ["server", "http1", "http2"], optional = true }
 hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"], optional = true }
 libc = { version = "0.2", optional = true }

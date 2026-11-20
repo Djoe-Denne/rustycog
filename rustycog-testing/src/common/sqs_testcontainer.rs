@@ -116,7 +116,8 @@ impl TestSqs {
         // Create SQS client
         let client = Self::create_sqs_client(&endpoint_url, &region).await?;
 
-        // Wait for LocalStack to be ready
+        // The readiness error is a redacted diagnostic that can cross the
+        // liveness await. Box the combined error only when returning it.
         if let Err(error) = Self::wait_for_localstack(&client).await {
             return match container.check_liveness().await {
                 Ok(observed) => Err(format!("{error}; fixture={}", observed.diagnostic).into()),
@@ -166,7 +167,7 @@ impl TestSqs {
     }
 
     /// Require the SQS API, not just its TCP listener, before creating queues.
-    async fn wait_for_localstack(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+    async fn wait_for_localstack(client: &Client) -> Result<(), String> {
         Self::wait_for_sqs_ready(client, Duration::from_secs(30), Duration::from_millis(200)).await
     }
 
@@ -174,7 +175,7 @@ impl TestSqs {
         client: &Client,
         budget: Duration,
         interval: Duration,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), String> {
         let started = tokio::time::Instant::now();
         let deadline = started + budget;
         let mut attempts = 0;
@@ -186,8 +187,7 @@ impl TestSqs {
                 return Err(format!(
                     "LocalStack SQS ListQueues readiness deadline exceeded after {attempts} attempts; elapsed_ms={}; last_request_ms={last_request_ms}; request_pending=false; last_error={last_error}",
                     started.elapsed().as_millis()
-                )
-                .into());
+                ));
             }
             attempts += 1;
             let request_started = tokio::time::Instant::now();
@@ -229,8 +229,7 @@ impl TestSqs {
                         if status < 500 && status != 429 {
                             return Err(format!(
                                 "LocalStack SQS ListQueues readiness rejected an invalid response (HTTP {status}); attempts={attempts}; last_request_ms={last_request_ms}; last_error={last_error}"
-                            )
-                            .into());
+                            ));
                         }
                     }
                     debug!("LocalStack SQS API is not ready: {}", last_error);
@@ -239,8 +238,7 @@ impl TestSqs {
                     return Err(format!(
                         "LocalStack SQS ListQueues readiness deadline exceeded after {attempts} attempts; elapsed_ms={}; last_request_ms={}; request_pending=true; last_error={last_error}",
                         started.elapsed().as_millis(), request_started.elapsed().as_millis()
-                    )
-                    .into());
+                    ));
                 }
             }
             tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + interval)).await;

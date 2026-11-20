@@ -1,6 +1,15 @@
 //! HTTP-boundary tests for the optional observer, not real SQS/LocalStack proof.
 use super::super::sqs_probe::SqsConsumerProbe;
-use super::*;
+use super::{DomainEvent, EventConsumer, EventHandler, SqsEventConsumer};
+use crate::rustycog_config::SqsConfig;
+use crate::rustycog_core::error::ServiceError;
+use async_trait::async_trait;
+use aws_config::{BehaviorVersion, Region};
+use aws_credential_types::Credentials;
+use aws_sdk_sqs::{Client, Config};
+use serde_json::json;
+use std::sync::Arc;
+use tokio::time::Duration;
 use wiremock::{matchers::header, Mock, MockServer, ResponseTemplate};
 
 struct SuspendedHandler(bool);

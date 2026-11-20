@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::future::Future;
 #[cfg(any(test, feature = "test-utils"))]
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::{sleep, Duration};
@@ -502,14 +502,17 @@ struct RunResources<H> {
 
 impl Drop for ConsumerRun {
     fn drop(&mut self) {
-        let mut state = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         state.active = None;
     }
 }
 
 impl ConsumerLifecycle {
     fn begin(lifecycle: &Arc<Mutex<Self>>) -> Result<Arc<ConsumerRun>, ServiceError> {
-        let mut state = lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lifecycle.lock().unwrap_or_else(PoisonError::into_inner);
         if state.active.is_some() {
             return Err(ServiceError::infrastructure("SQS consumer already running"));
         }
@@ -898,7 +901,10 @@ impl EventConsumer for SqsEventConsumer {
 
     async fn stop(&self) -> Result<(), ServiceError> {
         info!("Stopping SQS event consumer");
-        let mut state = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if let Some(stop) = &state.active {
             stop.send_replace(true);
         } else {

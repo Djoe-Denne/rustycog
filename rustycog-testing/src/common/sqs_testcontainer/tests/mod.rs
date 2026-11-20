@@ -11,6 +11,14 @@ use std::{
 };
 use wiremock::{matchers::any, Mock, MockServer, ResponseTemplate};
 
+#[test]
+fn sqs_constructor_future_is_send() {
+    fn require_send(_: impl std::future::Future + Send) {}
+
+    // This checks the future's type without starting a container.
+    require_send(TestSqs::new());
+}
+
 async fn client(server: &MockServer) -> Client {
     let base = TestSqs::create_sqs_client(&server.uri(), "us-east-1")
         .await
@@ -102,7 +110,7 @@ async fn permanent_sqs_rejection_is_not_retried_or_accepted() {
     )
     .await
     .unwrap_err();
-    assert!(error.to_string().contains("HTTP 403"));
+    assert!(error.contains("HTTP 403"));
     assert_only_list_queues(&server).await;
 }
 
@@ -142,7 +150,7 @@ async fn a_stalled_sqs_request_is_bounded_by_the_readiness_deadline() {
     )
     .await
     .expect("the fixture must enforce its own shorter readiness deadline");
-    let error = readiness.unwrap_err().to_string();
+    let error = readiness.unwrap_err();
     assert!(error.contains("request_pending=true"));
     assert!(error.contains("last_error=no_completed_response"));
     assert!(error.contains("last_request_ms="));
@@ -171,8 +179,7 @@ async fn stalled_request_retains_the_previous_http_failure_without_body() {
         Duration::from_millis(10),
     )
     .await
-    .unwrap_err()
-    .to_string();
+    .unwrap_err();
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert!(error.contains("after 2 attempts"));
     assert!(error.contains("request_pending=true"));
@@ -199,8 +206,7 @@ async fn permanent_rejection_reports_category_without_provider_message() {
         Duration::from_millis(10),
     )
     .await
-    .unwrap_err()
-    .to_string();
+    .unwrap_err();
     assert!(error.contains("HTTP 403"));
     assert!(error.contains("service_error"));
     assert!(!error.contains("private-provider-sentinel"));

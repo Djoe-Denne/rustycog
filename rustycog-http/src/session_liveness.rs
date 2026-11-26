@@ -435,6 +435,7 @@ mod tests {
             serde_json::json!({"decision": "live", "current_epoch": "8"}),
             serde_json::json!({"decision": "not_applicable", "current_epoch": "7"}),
             serde_json::json!({"decision": "unknown"}),
+            serde_json::json!({"decision": "live"}),
         ] {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
@@ -454,6 +455,107 @@ mod tests {
             .await;
         assert!(matches!(
             checker(&server).check(&query(Some(7))).await,
+            Err(SessionLivenessError::Unavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn configuration_and_client_validation_fail_closed() {
+        assert!(
+            HttpSessionLivenessChecker::from_config(&SessionLivenessConfig::default())
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            HttpSessionLivenessChecker::from_config(&SessionLivenessConfig {
+                timeout_ms: Some(1000),
+                ..SessionLivenessConfig::default()
+            }),
+            Err(SessionLivenessError::Unavailable { .. })
+        ));
+        for endpoint in [
+            "",
+            "ftp://example.test/liveness",
+            "http://user:pass@example.test/liveness",
+            "http://example.test/liveness#fragment",
+        ] {
+            assert!(matches!(
+                HttpSessionLivenessChecker::from_config(&SessionLivenessConfig {
+                    endpoint: Some(endpoint.into()),
+                    token_env: Some("PATH".into()),
+                    ..SessionLivenessConfig::default()
+                }),
+                Err(SessionLivenessError::Unavailable { .. })
+            ));
+        }
+        for timeout_ms in [0, 30_001] {
+            assert!(matches!(
+                HttpSessionLivenessChecker::from_config(&SessionLivenessConfig {
+                    endpoint: Some("http://127.0.0.1:9/liveness".into()),
+                    token_env: Some("PATH".into()),
+                    timeout_ms: Some(timeout_ms),
+                    ..SessionLivenessConfig::default()
+                }),
+                Err(SessionLivenessError::Unavailable { .. })
+            ));
+        }
+        assert!(matches!(
+            HttpSessionLivenessChecker::from_config(&SessionLivenessConfig {
+                endpoint: Some("http://127.0.0.1:9/liveness".into()),
+                ..SessionLivenessConfig::default()
+            }),
+            Err(SessionLivenessError::Unavailable { .. })
+        ));
+        assert!(
+            HttpSessionLivenessChecker::from_config(&SessionLivenessConfig {
+                endpoint: Some("http://127.0.0.1:9/liveness".into()),
+                token_env: Some("PATH".into()),
+                ..SessionLivenessConfig::default()
+            })
+            .unwrap()
+            .is_some()
+        );
+        assert!(HttpSessionLivenessChecker::new(
+            "not a url",
+            "x-workload-token",
+            "fixture",
+            Duration::from_secs(1)
+        )
+        .is_err());
+        assert!(HttpSessionLivenessChecker::new(
+            "http://example.test/liveness",
+            "bad header",
+            "fixture",
+            Duration::from_secs(1)
+        )
+        .is_err());
+        assert!(HttpSessionLivenessChecker::new(
+            "http://example.test/liveness",
+            "x-workload-token",
+            "bad\nvalue",
+            Duration::from_secs(1)
+        )
+        .is_err());
+        assert!(HttpSessionLivenessChecker::new(
+            "http://example.test/liveness",
+            "x-workload-token",
+            "fixture",
+            Duration::ZERO
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn transport_failure_is_unavailable() {
+        let checker = HttpSessionLivenessChecker::new(
+            "http://127.0.0.1:9/liveness",
+            "x-workload-token",
+            "fixture",
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        assert!(matches!(
+            checker.check(&query(Some(1))).await,
             Err(SessionLivenessError::Unavailable { .. })
         ));
     }

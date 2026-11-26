@@ -994,3 +994,146 @@ mod session_liveness_config_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod session_liveness_tests {
+    use super::super::session_liveness::SessionLivenessOutcome;
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const ISSUER: &str = "https://platform.example/iam";
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Behavior {
+        Live,
+        Revoked,
+        NotApplicable,
+        Unavailable,
+    }
+
+    struct Checker {
+        behavior: Behavior,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl SessionLivenessChecker for Checker {
+        async fn check(
+            &self,
+            _query: &SessionLivenessQuery,
+        ) -> Result<SessionLivenessOutcome, SessionLivenessError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match self.behavior {
+                Behavior::Live => Ok(SessionLivenessOutcome::with_current_epoch(
+                    SessionLivenessDecision::Live,
+                    1,
+                )),
+                Behavior::Revoked => Ok(SessionLivenessOutcome::with_current_epoch(
+                    SessionLivenessDecision::Revoked,
+                    2,
+                )),
+                Behavior::NotApplicable => Ok(SessionLivenessOutcome::new(
+                    SessionLivenessDecision::NotApplicable,
+                )),
+                Behavior::Unavailable => Err(SessionLivenessError::unavailable("fixture outage")),
+            }
+        }
+    }
+
+    fn auth() -> AuthConfig {
+        AuthConfig {
+            jwt: JwtAuthConfig {
+                platform_issuer: Some(ISSUER.into()),
+                allow_historical_platform_issuer: Some(false),
+                allowed_algorithms: vec!["HS256".into()],
+                hs256_secret: Some("fixture-secret".into()),
+                issuer: Some(ISSUER.into()),
+                ..JwtAuthConfig::default()
+            },
+            ..AuthConfig::default()
+        }
+    }
+
+    fn principal(issuer: &str) -> JwtPrincipal {
+        JwtPrincipal {
+            iss: issuer.into(),
+            sub: Uuid::new_v4(),
+            org: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn liveness_decisions_and_issuer_classification_are_explicit() {
+        for behavior in [
+            Behavior::Live,
+            Behavior::Revoked,
+            Behavior::NotApplicable,
+            Behavior::Unavailable,
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let extractor = UserIdExtractor::new(auth())
+                .unwrap()
+                .with_session_liveness_checker(Arc::new(Checker {
+                    behavior,
+                    calls: calls.clone(),
+                }));
+            let result = extractor
+                .check_session_liveness(&principal(ISSUER), Some(1))
+                .await;
+            match behavior {
+                Behavior::Live => assert!(result.is_ok()),
+                Behavior::Revoked => {
+                    assert!(matches!(result, Err(SessionLivenessError::Revoked)));
+                }
+                Behavior::NotApplicable | Behavior::Unavailable => {
+                    assert!(matches!(
+                        result,
+                        Err(SessionLivenessError::Unavailable { .. })
+                    ));
+                }
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let extractor = UserIdExtractor::new(auth())
+            .unwrap()
+            .with_session_liveness_checker(Arc::new(Checker {
+                behavior: Behavior::Revoked,
+                calls: calls.clone(),
+            }));
+        extractor
+            .check_session_liveness(&principal("https://organization.example/iam"), Some(1))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        UserIdExtractor::new(auth())
+            .unwrap()
+            .check_session_liveness(&principal(ISSUER), Some(1))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn required_checker_and_default_user_paths_are_covered() {
+        assert!(UserIdExtractor::new(auth())
+            .unwrap()
+            .require_session_liveness_checker()
+            .is_err());
+        let calls = Arc::new(AtomicUsize::new(0));
+        assert!(UserIdExtractor::new(auth())
+            .unwrap()
+            .with_session_liveness_checker(Arc::new(Checker {
+                behavior: Behavior::Live,
+                calls,
+            }))
+            .require_session_liveness_checker()
+            .is_ok());
+
+        let user = Uuid::new_v4();
+        let extractor = UserIdExtractor::with_default_user_id(auth(), user).unwrap();
+        let verified = extractor.extract_verified_principal("").await.unwrap();
+        assert_eq!(verified.principal.sub, user);
+        assert_eq!(verified.auth_epoch, None);
+    }
+}

@@ -367,3 +367,136 @@ mod principal_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::super::session_liveness::{
+        SessionLivenessChecker, SessionLivenessDecision, SessionLivenessError,
+        SessionLivenessOutcome, SessionLivenessQuery,
+    };
+    use super::*;
+    use async_trait::async_trait;
+    use axum::{middleware, routing::get, Router};
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const SECRET: &str = "middleware-liveness-test-secret";
+    const ISSUER: &str = "https://platform.example/iam";
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Behavior {
+        Live,
+        Revoked,
+        Unavailable,
+        NotApplicable,
+    }
+
+    struct Checker(Behavior);
+
+    #[async_trait]
+    impl SessionLivenessChecker for Checker {
+        async fn check(
+            &self,
+            _query: &SessionLivenessQuery,
+        ) -> Result<SessionLivenessOutcome, SessionLivenessError> {
+            match self.0 {
+                Behavior::Live => Ok(SessionLivenessOutcome::with_current_epoch(
+                    SessionLivenessDecision::Live,
+                    1,
+                )),
+                Behavior::Revoked => Ok(SessionLivenessOutcome::with_current_epoch(
+                    SessionLivenessDecision::Revoked,
+                    2,
+                )),
+                Behavior::Unavailable => Err(SessionLivenessError::unavailable("fixture outage")),
+                Behavior::NotApplicable => Ok(SessionLivenessOutcome::new(
+                    SessionLivenessDecision::NotApplicable,
+                )),
+            }
+        }
+    }
+
+    fn extractor(behavior: Behavior) -> Arc<UserIdExtractor> {
+        Arc::new(
+            UserIdExtractor::from_resolved_secret(SECRET)
+                .unwrap()
+                .with_principal_policy(PrincipalPolicy::new(ISSUER, false).unwrap())
+                .unwrap()
+                .with_session_liveness_checker(Arc::new(Checker(behavior))),
+        )
+    }
+
+    fn token() -> String {
+        let now = chrono::Utc::now().timestamp();
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "iss": ISSUER,
+                "sub": Uuid::new_v4(),
+                "exp": now + 3600,
+                "iat": now,
+                "jti": "fixture-id",
+                "auth_epoch": "1",
+            }),
+            &EncodingKey::from_secret(SECRET.as_bytes()),
+        )
+        .unwrap()
+    }
+
+    async fn counted(State(counter): State<Arc<AtomicUsize>>) -> &'static str {
+        counter.fetch_add(1, Ordering::SeqCst);
+        "ok"
+    }
+
+    fn server(behavior: Behavior, counter: Arc<AtomicUsize>) -> axum_test::TestServer {
+        let extractor = extractor(behavior);
+        let app = Router::new()
+            .route(
+                "/required",
+                get(counted).route_layer(middleware::from_fn_with_state(
+                    extractor.clone(),
+                    auth_middleware,
+                )),
+            )
+            .route(
+                "/optional",
+                get(counted).route_layer(middleware::from_fn_with_state(
+                    extractor,
+                    optional_auth_middleware,
+                )),
+            )
+            .with_state(counter);
+        axum_test::TestServer::new(app).unwrap()
+    }
+
+    #[tokio::test]
+    async fn required_and_optional_auth_enforce_liveness_before_handlers() {
+        for (behavior, expected) in [
+            (Behavior::Live, StatusCode::OK),
+            (Behavior::Revoked, StatusCode::UNAUTHORIZED),
+            (Behavior::Unavailable, StatusCode::SERVICE_UNAVAILABLE),
+            (Behavior::NotApplicable, StatusCode::SERVICE_UNAVAILABLE),
+        ] {
+            for path in ["/required", "/optional"] {
+                let counter = Arc::new(AtomicUsize::new(0));
+                let server = server(behavior, counter.clone());
+                let response = server
+                    .get(path)
+                    .add_header("authorization", format!("Bearer {}", token()))
+                    .await;
+                response.assert_status(expected);
+                assert_eq!(
+                    counter.load(Ordering::SeqCst),
+                    usize::from(behavior == Behavior::Live)
+                );
+            }
+        }
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let server = server(Behavior::Revoked, counter.clone());
+        let response = server.get("/optional").await;
+        response.assert_status(StatusCode::OK);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+}

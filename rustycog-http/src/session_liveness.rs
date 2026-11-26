@@ -277,10 +277,14 @@ impl SessionLivenessChecker for HttpSessionLivenessChecker {
                 ))
             };
         }
-        let current_epoch = response
-            .current_epoch
-            .as_deref()
-            .ok_or_else(|| SessionLivenessError::unavailable("missing current epoch"))?;
+        let Some(current_epoch) = response.current_epoch.as_deref() else {
+            if response.decision == WireDecision::Revoked {
+                return Ok(SessionLivenessOutcome::new(
+                    SessionLivenessDecision::Revoked,
+                ));
+            }
+            return Err(SessionLivenessError::unavailable("missing current epoch"));
+        };
         let current_epoch =
             parse_canonical_epoch(current_epoch).map_err(SessionLivenessError::unavailable)?;
         let expected = if query.auth_epoch == Some(current_epoch)
@@ -385,6 +389,21 @@ mod tests {
             assert_eq!(outcome.decision, decision);
             assert_eq!(outcome.current_epoch, Some(current.parse().unwrap()));
         }
+    }
+
+    #[tokio::test]
+    async fn revoked_missing_account_does_not_require_a_current_epoch() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"decision": "revoked"})),
+            )
+            .mount(&server)
+            .await;
+        let outcome = checker(&server).check(&query(Some(1))).await.unwrap();
+        assert_eq!(outcome.decision, SessionLivenessDecision::Revoked);
+        assert_eq!(outcome.current_epoch, None);
     }
 
     #[tokio::test]

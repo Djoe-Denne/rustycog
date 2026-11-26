@@ -8,7 +8,7 @@ use axum::routing::get;
 use axum::{middleware, Router};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::StatusCode;
-use rustycog_framework::config::ServerConfig;
+use rustycog_framework::config::{AuthConfig, JwtAuthConfig, ServerConfig, SessionLivenessConfig};
 use rustycog_framework::http::{
     auth_middleware, optional_auth_middleware, serve_router, JwtPrincipal, OptionalAuthUser,
     SessionLivenessChecker, SessionLivenessDecision, SessionLivenessError, SessionLivenessOutcome,
@@ -289,4 +289,51 @@ fn enforcement_composition_requires_a_checker() {
         .err()
         .expect("missing checker must fail");
     assert_eq!(error.code(), "SESSION_LIVENESS_UNAVAILABLE");
+}
+
+#[tokio::test]
+async fn auth_configuration_automatically_attaches_the_http_checker() {
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    let token = std::env::var("PATH").expect("PATH fixture token");
+    Mock::given(method("POST"))
+        .and(path("/liveness"))
+        .and(header("x-iam-internal-token", token.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "decision": "live",
+            "current_epoch": "0",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let auth = AuthConfig {
+        jwt: JwtAuthConfig {
+            platform_issuer: Some(PLATFORM_ISSUER.into()),
+            allow_historical_platform_issuer: Some(false),
+            allowed_algorithms: vec!["HS256".into()],
+            hs256_secret: Some(SECRET.into()),
+            issuer: Some(PLATFORM_ISSUER.into()),
+            ..JwtAuthConfig::default()
+        },
+        session_liveness: SessionLivenessConfig {
+            endpoint: Some(format!("{}/liveness", server.uri())),
+            token_env: Some("PATH".into()),
+            timeout_ms: Some(2000),
+            ..SessionLivenessConfig::default()
+        },
+        ..AuthConfig::default()
+    };
+    let extractor = UserIdExtractor::new(auth).unwrap();
+    let principal = JwtPrincipal {
+        iss: PLATFORM_ISSUER.into(),
+        sub: Uuid::new_v4(),
+        org: None,
+    };
+    extractor
+        .check_session_liveness(&principal, Some(0))
+        .await
+        .unwrap();
+    server.verify().await;
 }

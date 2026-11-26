@@ -9,8 +9,9 @@ use axum::{
 use tracing::debug;
 use uuid::Uuid;
 
-use super::jwt_handler::{JwtPrincipal, UserIdExtractor};
+use super::jwt_handler::{JwtPrincipal, UserIdExtractor, VerifiedPrincipal};
 use super::mesh_principal::{gateway_principal, require_gateway_peer};
+use super::session_liveness::SessionLivenessError;
 use super::tls::PeerClientCertificate;
 use std::sync::Arc;
 
@@ -171,6 +172,23 @@ fn with_principal(
     Ok(req)
 }
 
+async fn admit_verified_principal(
+    verified: VerifiedPrincipal,
+    extractor: &UserIdExtractor,
+) -> Result<JwtPrincipal, StatusCode> {
+    extractor
+        .check_session_liveness(&verified.principal, verified.auth_epoch)
+        .await
+        .map_err(|error| match error {
+            SessionLivenessError::Revoked => StatusCode::UNAUTHORIZED,
+            SessionLivenessError::Unavailable { message } => {
+                debug!(reason = %message, "Session liveness unavailable");
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+        })?;
+    Ok(verified.principal)
+}
+
 /// Authentication middleware using JWT user ID / principal extractor
 ///
 /// In mesh mode the bearer JWT is ignored: the principal comes from the
@@ -179,8 +197,10 @@ fn with_principal(
 /// # Errors
 ///
 /// Returns [`StatusCode::UNAUTHORIZED`] if the Authorization header is missing,
-/// is not a Bearer token, or user ID extraction fails. In mesh mode, returns it
-/// when the peer is not the gateway or the principal headers are invalid.
+/// is not a Bearer token, user ID extraction fails, or the platform session is
+/// revoked. Returns [`StatusCode::SERVICE_UNAVAILABLE`] when the authoritative
+/// liveness decision is unavailable. In mesh mode, returns 401 when the peer is
+/// not the gateway or the principal headers are invalid.
 pub async fn auth_middleware(
     State(user_id_extractor): State<Arc<UserIdExtractor>>,
     mut req: Request<Body>,
@@ -219,13 +239,14 @@ pub async fn auth_middleware(
         request_id.unwrap_or_default()
     );
 
-    let principal = user_id_extractor
-        .extract_principal(token)
+    let verified = user_id_extractor
+        .extract_verified_principal(token)
         .await
         .map_err(|e| {
             debug!("User ID extraction failed: {}", e);
             StatusCode::UNAUTHORIZED
         })?;
+    let principal = admit_verified_principal(verified, &user_id_extractor).await?;
 
     Ok(next
         .run(with_principal(req, principal, &user_id_extractor)?)
@@ -239,12 +260,18 @@ pub async fn auth_middleware(
 /// Gateway SAN plus valid principal headers become the user; missing or
 /// invalid headers continue anonymous (no [`Uuid`] in extensions).
 ///
-/// When mesh mode is off, a missing or invalid bearer continues anonymous.
+/// When mesh mode is off, a missing token continues anonymous. A presented
+/// malformed, cryptographically invalid, revoked, or unavailable-liveness token
+/// remains an authentication/infrastructure error and is never downgraded to
+/// anonymous.
 ///
 /// # Errors
 ///
 /// Returns [`StatusCode::UNAUTHORIZED`] in mesh mode when the peer is not the
-/// gateway. Otherwise the request continues (`Ok`).
+/// gateway, or for a presented invalid/revoked direct token. Returns
+/// [`StatusCode::SERVICE_UNAVAILABLE`] when a presented platform token cannot
+/// obtain an authoritative liveness decision. Missing direct tokens continue
+/// anonymously.
 pub async fn optional_auth_middleware(
     State(user_id_extractor): State<Arc<UserIdExtractor>>,
     mut req: Request<Body>,
@@ -280,10 +307,11 @@ pub async fn optional_auth_middleware(
             .ok()
             .and_then(extract_token)
             .ok_or(StatusCode::UNAUTHORIZED)?;
-        let principal = user_id_extractor
-            .extract_principal(token)
+        let verified = user_id_extractor
+            .extract_verified_principal(token)
             .await
             .map_err(|_| StatusCode::UNAUTHORIZED)?;
+        let principal = admit_verified_principal(verified, &user_id_extractor).await?;
         return Ok(next
             .run(with_principal(req, principal, &user_id_extractor)?)
             .await);

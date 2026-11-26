@@ -32,6 +32,50 @@ fn valid_claims() -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn auth_epoch_claim_distinguishes_missing_and_canonical_values() {
+    let extractor = rs256_extractor();
+    let mut claims = valid_claims();
+    let verified = extractor
+        .extract_verified_principal(&signed_claims(&claims))
+        .await
+        .expect("legacy token without epoch");
+    assert_eq!(verified.auth_epoch, None);
+
+    for (raw, expected) in [("0", 0), ("1", 1), ("18446744073709551615", u64::MAX)] {
+        claims["auth_epoch"] = serde_json::json!(raw);
+        let verified = extractor
+            .extract_verified_principal(&signed_claims(&claims))
+            .await
+            .expect("canonical epoch");
+        assert_eq!(verified.auth_epoch, Some(expected));
+    }
+}
+
+#[tokio::test]
+async fn present_malformed_auth_epoch_is_never_legacy() {
+    let extractor = rs256_extractor();
+    for malformed in [
+        serde_json::Value::Null,
+        serde_json::json!(1),
+        serde_json::json!(""),
+        serde_json::json!("01"),
+        serde_json::json!("-1"),
+        serde_json::json!("+1"),
+        serde_json::json!(" 1"),
+        serde_json::json!("1 "),
+        serde_json::json!("18446744073709551616"),
+    ] {
+        let mut claims = valid_claims();
+        claims["auth_epoch"] = malformed;
+        let error = extractor
+            .extract_verified_principal(&signed_claims(&claims))
+            .await
+            .expect_err("malformed epoch must be rejected");
+        assert_eq!(error.code(), "invalid_token");
+    }
+}
+
+#[tokio::test]
 async fn expired_bad_signature_future_dates_and_pending_are_denied() {
     let extractor = rs256_extractor();
     for field in ["exp", "nbf", "iat"] {

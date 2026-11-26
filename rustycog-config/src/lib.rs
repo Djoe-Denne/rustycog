@@ -265,6 +265,29 @@ pub struct AuthConfig {
     /// Gateway-verified principal (mesh mode). Off by default.
     #[serde(default)]
     pub mesh: MeshAuthConfig,
+    /// Optional authoritative platform-session liveness reader.
+    #[serde(default)]
+    pub session_liveness: SessionLivenessConfig,
+}
+
+/// Optional HTTP session-liveness settings for direct admission.
+///
+/// The workload token value is read from an environment variable at composition
+/// time and is never serialized as part of this configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionLivenessConfig {
+    /// Absolute HTTP(S) liveness endpoint. Absent disables the reader.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Environment variable containing the workload token value.
+    #[serde(default)]
+    pub token_env: Option<String>,
+    /// Workload token header name. Defaults to `x-iam-internal-token`.
+    #[serde(default)]
+    pub token_header: Option<String>,
+    /// Total request deadline in milliseconds. Defaults to 2000.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 /// Mesh mode: a gateway has already verified the JWT.

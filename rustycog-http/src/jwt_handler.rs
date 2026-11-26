@@ -1,8 +1,12 @@
 //! JWT bearer-token verifier (RS256 + JWKS, with optional HS256 migration window).
 
 use super::jwks::{normalize_authority_url, JwksCache, LocalJwksSeed};
+use super::session_liveness::{
+    HttpSessionLivenessChecker, SessionLivenessChecker, SessionLivenessDecision,
+    SessionLivenessError, SessionLivenessQuery,
+};
 use crate::rustycog_command::{Command, CommandError, CommandHandler, ValidateTokenCommand};
-use crate::rustycog_config::{AuthConfig, JwtAuthConfig, MeshAuthConfig};
+use crate::rustycog_config::{AuthConfig, JwtAuthConfig, MeshAuthConfig, SessionLivenessConfig};
 use crate::rustycog_permission::{PrincipalPolicy, PrincipalRef};
 use async_trait::async_trait;
 use jsonwebtoken::{
@@ -29,6 +33,19 @@ pub struct JwtPrincipal {
     pub org: Option<String>,
 }
 
+/// Cryptographically verified principal plus the optional authentication epoch.
+///
+/// `auth_epoch: None` means the claim was absent and is eligible for the legacy
+/// epoch-zero rule. A present but malformed claim is rejected before this type
+/// is constructed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedPrincipal {
+    /// Verified issuer-aware principal.
+    pub principal: JwtPrincipal,
+    /// Canonical unsigned epoch claim, if present.
+    pub auth_epoch: Option<u64>,
+}
+
 /// User ID / principal extractor backed by RS256 JWKS and optional HS256.
 #[derive(Clone)]
 pub struct UserIdExtractor {
@@ -45,6 +62,8 @@ pub struct UserIdExtractor {
     jwks: Option<Arc<JwksCache>>,
     /// Mesh mode: SAN of the gateway whose `x-principal-*` headers are trusted.
     gateway_san: Option<Arc<str>>,
+    /// Authoritative direct-mode platform-session liveness reader.
+    session_liveness: Option<Arc<dyn SessionLivenessChecker>>,
 }
 
 impl UserIdExtractor {
@@ -56,9 +75,13 @@ impl UserIdExtractor {
     /// HS256 is allowed without a secret, or if RS256 is allowed without a
     /// JWKS URL (and no inline JWKS was provided via another constructor).
     pub fn new(auth_config: AuthConfig) -> Result<Self, CommandError> {
+        let session_liveness = Self::configured_session_liveness(&auth_config.session_liveness)?;
         Self::from_parts(auth_config.jwt, None, None)
             .and_then(Self::require_principal_policy)
-            .map(|extractor| extractor.with_mesh(&auth_config.mesh))
+            .map(|mut extractor| {
+                extractor.session_liveness = session_liveness;
+                extractor.with_mesh(&auth_config.mesh)
+            })
     }
 
     /// Build a URL-backed verifier seeded by this instance's local publisher.
@@ -111,6 +134,7 @@ impl UserIdExtractor {
         seed: LocalJwksSeed,
         platform_issuer: &str,
     ) -> Result<Self, CommandError> {
+        let session_liveness = Self::configured_session_liveness(&auth_config.session_liveness)?;
         let issuer = trim_opt(Some(platform_issuer.to_string())).ok_or_else(|| {
             CommandError::authentication("invalid_jwt_config", "Seed requires a platform issuer")
         })?;
@@ -141,6 +165,7 @@ impl UserIdExtractor {
         })?;
         cache.install_local_seed(seed, &issuer)?;
         extractor.platform_rs256_issuer = Some(issuer);
+        extractor.session_liveness = session_liveness;
         Ok(extractor.with_mesh(&auth_config.mesh))
     }
 
@@ -148,6 +173,18 @@ impl UserIdExtractor {
         let san = mesh.trusted_gateway_san.trim();
         self.gateway_san = (!san.is_empty()).then(|| Arc::from(san));
         self
+    }
+
+    fn configured_session_liveness(
+        config: &SessionLivenessConfig,
+    ) -> Result<Option<Arc<dyn SessionLivenessChecker>>, CommandError> {
+        HttpSessionLivenessChecker::from_config(config)
+            .map(|checker| {
+                checker.map(|checker| Arc::new(checker) as Arc<dyn SessionLivenessChecker>)
+            })
+            .map_err(|error| {
+                CommandError::authentication("SESSION_LIVENESS_UNAVAILABLE", error.to_string())
+            })
     }
 
     /// Gateway SAN when mesh mode is on: authenticated routes then read the
@@ -171,6 +208,74 @@ impl UserIdExtractor {
     #[must_use]
     pub fn principal_policy(&self) -> Option<&Arc<PrincipalPolicy>> {
         self.principal_policy.as_ref()
+    }
+
+    /// Attach the authoritative direct-mode session-liveness reader.
+    #[must_use]
+    pub fn with_session_liveness_checker(
+        mut self,
+        checker: Arc<dyn SessionLivenessChecker>,
+    ) -> Self {
+        self.session_liveness = Some(checker);
+        self
+    }
+
+    /// Require a session-liveness reader at composition time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication configuration error when enforcement is
+    /// intended but no authoritative reader was attached.
+    pub fn require_session_liveness_checker(self) -> Result<Self, CommandError> {
+        if self.session_liveness.is_none() {
+            return Err(CommandError::authentication(
+                "SESSION_LIVENESS_UNAVAILABLE",
+                "A session-liveness reader is required",
+            ));
+        }
+        Ok(self)
+    }
+
+    /// Check a verified principal against the authoritative platform epoch.
+    ///
+    /// Non-platform issuers and extractors without an attached checker preserve
+    /// their existing behavior. Mesh admission never calls this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionLivenessError::Revoked`] for a stale credential and
+    /// [`SessionLivenessError::Unavailable`] when no authoritative decision can
+    /// be obtained.
+    pub async fn check_session_liveness(
+        &self,
+        principal: &JwtPrincipal,
+        auth_epoch: Option<u64>,
+    ) -> Result<(), SessionLivenessError> {
+        let Some(checker) = self.session_liveness.as_ref() else {
+            return Ok(());
+        };
+        let policy = self
+            .principal_policy
+            .as_ref()
+            .ok_or_else(|| SessionLivenessError::unavailable("principal policy is unavailable"))?;
+        if principal.iss != policy.platform_issuer {
+            return Ok(());
+        }
+        match checker
+            .check(&SessionLivenessQuery {
+                issuer: principal.iss.clone(),
+                subject: principal.sub,
+                auth_epoch,
+            })
+            .await?
+            .decision
+        {
+            SessionLivenessDecision::Live => Ok(()),
+            SessionLivenessDecision::NotApplicable => Err(SessionLivenessError::unavailable(
+                "platform issuer received a not_applicable decision",
+            )),
+            SessionLivenessDecision::Revoked => Err(SessionLivenessError::Revoked),
+        }
     }
 
     fn require_principal_policy(self) -> Result<Self, CommandError> {
@@ -209,6 +314,7 @@ impl UserIdExtractor {
             audience: None,
             jwks: None,
             gateway_san: None,
+            session_liveness: None,
         })
     }
 
@@ -223,9 +329,13 @@ impl UserIdExtractor {
         auth_config: AuthConfig,
         user_id: Uuid,
     ) -> Result<Self, CommandError> {
+        let session_liveness = Self::configured_session_liveness(&auth_config.session_liveness)?;
         Self::from_parts(auth_config.jwt, Some(user_id), None)
             .and_then(Self::require_principal_policy)
-            .map(|extractor| extractor.with_mesh(&auth_config.mesh))
+            .map(|mut extractor| {
+                extractor.session_liveness = session_liveness;
+                extractor.with_mesh(&auth_config.mesh)
+            })
     }
 
     /// Create an RS256 extractor from an inline JWKS JSON document (no network).
@@ -262,9 +372,13 @@ impl UserIdExtractor {
         auth_config: AuthConfig,
         jwks_json: impl AsRef<str>,
     ) -> Result<Self, CommandError> {
+        let session_liveness = Self::configured_session_liveness(&auth_config.session_liveness)?;
         Self::from_parts(auth_config.jwt, None, Some(jwks_json.as_ref()))
             .and_then(Self::require_principal_policy)
-            .map(|extractor| extractor.with_mesh(&auth_config.mesh))
+            .map(|mut extractor| {
+                extractor.session_liveness = session_liveness;
+                extractor.with_mesh(&auth_config.mesh)
+            })
     }
 
     fn from_parts(
@@ -350,6 +464,7 @@ impl UserIdExtractor {
             audience: trim_opt(jwt.audience),
             jwks: jwks_cache,
             gateway_san: None,
+            session_liveness: None,
         })
     }
 
@@ -362,12 +477,31 @@ impl UserIdExtractor {
     /// fails, required claims are missing, the token is expired, issuer trust
     /// checks fail, or `sub` is not a valid UUID.
     pub async fn extract_principal(&self, token: &str) -> Result<JwtPrincipal, CommandError> {
+        self.extract_verified_principal(token)
+            .await
+            .map(|verified| verified.principal)
+    }
+
+    /// Extract the authenticated principal and its verified epoch claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommandError`] for the same cryptographic and claim failures as
+    /// [`Self::extract_principal`], and when a present `auth_epoch` claim is not
+    /// a canonical unsigned 64-bit decimal string.
+    pub async fn extract_verified_principal(
+        &self,
+        token: &str,
+    ) -> Result<VerifiedPrincipal, CommandError> {
         if token.trim().is_empty() {
             if let Some(default_user_id) = self.default_user_id {
-                return Ok(JwtPrincipal {
-                    iss: String::new(),
-                    sub: default_user_id,
-                    org: None,
+                return Ok(VerifiedPrincipal {
+                    principal: JwtPrincipal {
+                        iss: String::new(),
+                        sub: default_user_id,
+                        org: None,
+                    },
+                    auth_epoch: None,
                 });
             }
             return Err(CommandError::authentication(
@@ -419,7 +553,11 @@ impl UserIdExtractor {
             .map_err(|e| CommandError::authentication("PRINCIPAL_INCOMPATIBLE", e.to_string()))
     }
 
-    fn verify_hs256(&self, token: &str, _header: &Header) -> Result<JwtPrincipal, CommandError> {
+    fn verify_hs256(
+        &self,
+        token: &str,
+        _header: &Header,
+    ) -> Result<VerifiedPrincipal, CommandError> {
         let secret = self.hs256_secret.as_ref().ok_or_else(|| {
             CommandError::authentication(
                 "missing_jwt_secret",
@@ -451,7 +589,7 @@ impl UserIdExtractor {
         .map_err(|error| Self::map_jwt_error(&error))?;
 
         let claims = token_data.claims;
-        let principal = claims_to_principal(&claims, self.hs256_issuer.clone())?;
+        let principal = claims_to_verified_principal(&claims, self.hs256_issuer.clone())?;
         Ok(principal)
     }
 
@@ -459,7 +597,7 @@ impl UserIdExtractor {
         &self,
         token: &str,
         header: &Header,
-    ) -> Result<JwtPrincipal, CommandError> {
+    ) -> Result<VerifiedPrincipal, CommandError> {
         let typ = header.typ.as_deref().unwrap_or("");
         if typ != ACCESS_TOKEN_TYP {
             return Err(CommandError::authentication(
@@ -538,7 +676,7 @@ impl UserIdExtractor {
             }
         }
 
-        let principal = claims_to_principal(&claims, Some(jwt_iss.to_string()))?;
+        let principal = claims_to_verified_principal(&claims, Some(jwt_iss.to_string()))?;
         if !jwks.still_authorizes(kid, cached.acquired_at) {
             return Err(CommandError::authentication(
                 "invalid_token",
@@ -632,10 +770,10 @@ fn refuse_dangerous_kid(kid: &str) -> Result<(), CommandError> {
     Ok(())
 }
 
-fn claims_to_principal(
+fn claims_to_verified_principal(
     claims: &serde_json::Value,
     fallback_iss: Option<String>,
-) -> Result<JwtPrincipal, CommandError> {
+) -> Result<VerifiedPrincipal, CommandError> {
     let sub = claims["sub"]
         .as_str()
         .ok_or_else(|| CommandError::authentication("invalid_token", "Missing user ID in token"))?;
@@ -679,7 +817,23 @@ fn claims_to_principal(
 
     let org = claims["org"].as_str().map(str::to_string);
 
-    Ok(JwtPrincipal { iss, sub, org })
+    let auth_epoch = parse_auth_epoch(claims)?;
+    Ok(VerifiedPrincipal {
+        principal: JwtPrincipal { iss, sub, org },
+        auth_epoch,
+    })
+}
+
+fn parse_auth_epoch(claims: &serde_json::Value) -> Result<Option<u64>, CommandError> {
+    let Some(raw) = claims.get("auth_epoch") else {
+        return Ok(None);
+    };
+    let value = raw.as_str().ok_or_else(|| {
+        CommandError::authentication("invalid_token", "auth_epoch must be a decimal string")
+    })?;
+    super::session_liveness::parse_canonical_epoch(value)
+        .map(Some)
+        .map_err(|message| CommandError::authentication("invalid_token", message))
 }
 
 fn validate_claim_times(
@@ -761,5 +915,82 @@ mod claim_time_tests {
                 validate_claim_times(&serde_json::json!({"nbf":value}), now, now, skew).is_err()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod session_liveness_config_tests {
+    use super::*;
+
+    fn auth(config: SessionLivenessConfig) -> AuthConfig {
+        AuthConfig {
+            jwt: JwtAuthConfig {
+                platform_issuer: Some("https://platform.example/iam".into()),
+                allow_historical_platform_issuer: Some(false),
+                allowed_algorithms: vec!["HS256".into()],
+                hs256_secret: Some("fixture-secret".into()),
+                issuer: Some("https://platform.example/iam".into()),
+                ..JwtAuthConfig::default()
+            },
+            session_liveness: config,
+            ..AuthConfig::default()
+        }
+    }
+
+    #[test]
+    fn partial_liveness_settings_and_missing_token_context_fail_closed() {
+        let partial = SessionLivenessConfig {
+            timeout_ms: Some(1000),
+            ..SessionLivenessConfig::default()
+        };
+        assert_eq!(
+            UserIdExtractor::new(auth(partial))
+                .err()
+                .expect("configuration error")
+                .code(),
+            "SESSION_LIVENESS_UNAVAILABLE"
+        );
+
+        let missing_env = SessionLivenessConfig {
+            endpoint: Some("http://127.0.0.1:9/liveness".into()),
+            ..SessionLivenessConfig::default()
+        };
+        assert_eq!(
+            UserIdExtractor::new(auth(missing_env))
+                .err()
+                .expect("configuration error")
+                .code(),
+            "SESSION_LIVENESS_UNAVAILABLE"
+        );
+
+        let missing_value = SessionLivenessConfig {
+            endpoint: Some("http://127.0.0.1:9/liveness".into()),
+            token_env: Some("RUSTYCOG_TEST_MISSING_LIVENESS_TOKEN".into()),
+            ..SessionLivenessConfig::default()
+        };
+        assert_eq!(
+            UserIdExtractor::new(auth(missing_value))
+                .err()
+                .expect("configuration error")
+                .code(),
+            "SESSION_LIVENESS_UNAVAILABLE"
+        );
+    }
+
+    #[test]
+    fn unbounded_liveness_timeout_is_rejected() {
+        let config = SessionLivenessConfig {
+            endpoint: Some("http://127.0.0.1:9/liveness".into()),
+            token_env: Some("RUSTYCOG_TEST_MISSING_LIVENESS_TOKEN".into()),
+            timeout_ms: Some(0),
+            ..SessionLivenessConfig::default()
+        };
+        assert_eq!(
+            UserIdExtractor::new(auth(config))
+                .err()
+                .expect("configuration error")
+                .code(),
+            "SESSION_LIVENESS_UNAVAILABLE"
+        );
     }
 }

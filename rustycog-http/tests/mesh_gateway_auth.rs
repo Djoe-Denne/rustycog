@@ -13,6 +13,7 @@ use reqwest::StatusCode;
 use rustycog_framework::config::{AuthConfig, JwtAuthConfig, MeshAuthConfig, ServerConfig};
 use rustycog_framework::http::{
     auth_middleware, optional_auth_middleware, serve_router, JwtPrincipal, OptionalAuthUser,
+    SessionLivenessChecker, SessionLivenessError, SessionLivenessOutcome, SessionLivenessQuery,
     UserIdExtractor,
 };
 use uuid::Uuid;
@@ -103,6 +104,18 @@ fn ephemeral_port() -> u16 {
         .port()
 }
 
+struct NeverCalledChecker;
+
+#[async_trait::async_trait]
+impl SessionLivenessChecker for NeverCalledChecker {
+    async fn check(
+        &self,
+        _query: &SessionLivenessQuery,
+    ) -> Result<SessionLivenessOutcome, SessionLivenessError> {
+        panic!("mesh admission must trust the gateway decision without a direct liveness call");
+    }
+}
+
 fn extractor(gateway_san: &str) -> Arc<UserIdExtractor> {
     let auth = AuthConfig {
         jwt: JwtAuthConfig {
@@ -115,8 +128,13 @@ fn extractor(gateway_san: &str) -> Arc<UserIdExtractor> {
         mesh: MeshAuthConfig {
             trusted_gateway_san: gateway_san.into(),
         },
+        ..AuthConfig::default()
     };
-    Arc::new(UserIdExtractor::new(auth).unwrap())
+    Arc::new(
+        UserIdExtractor::new(auth)
+            .unwrap()
+            .with_session_liveness_checker(Arc::new(NeverCalledChecker)),
+    )
 }
 
 async fn me(Extension(principal): Extension<JwtPrincipal>) -> String {

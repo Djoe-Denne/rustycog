@@ -256,6 +256,11 @@ name = "mesh_gateway_auth"
 path = "rustycog-http/tests/mesh_gateway_auth.rs"
 required-features = ["http"]
 
+[[test]]
+name = "session_liveness_auth"
+path = "rustycog-http/tests/session_liveness_auth.rs"
+required-features = ["http"]
+
 [dev-dependencies]
 wiremock = "0.6"
 claims = "0.8"

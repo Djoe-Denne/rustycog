@@ -8,6 +8,7 @@ mod mesh_principal;
 pub mod middleware_auth;
 pub mod middleware_permission;
 mod owned_server;
+pub mod session_liveness;
 mod tls;
 pub mod tracing_middleware;
 
@@ -16,13 +17,19 @@ pub use error::{GenericHttpError, ValidationError};
 pub use extractors::ValidatedJson;
 pub use jwks::LocalJwksSeed;
 pub use jwt::TokenClaims;
-pub use jwt_handler::{JwtPrincipal, UserIdExtractionHandler, UserIdExtractor, ACCESS_TOKEN_TYP};
+pub use jwt_handler::{
+    JwtPrincipal, UserIdExtractionHandler, UserIdExtractor, VerifiedPrincipal, ACCESS_TOKEN_TYP,
+};
 pub use middleware_auth::{
     auth_middleware, optional_auth_middleware, AuthPrincipal, AuthUser, OptionalAuthPrincipal,
     OptionalAuthUser,
 };
 pub use owned_server::{
     start_router_owned, HttpShutdownBudget, HttpShutdownReport, OwnedHttpServer,
+};
+pub use session_liveness::{
+    HttpSessionLivenessChecker, SessionLivenessChecker, SessionLivenessDecision,
+    SessionLivenessError, SessionLivenessOutcome, SessionLivenessQuery,
 };
 pub use tls::PeerClientCertificate;
 pub use tracing_middleware::{
